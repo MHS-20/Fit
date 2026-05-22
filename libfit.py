@@ -448,3 +448,41 @@ class FitCommit(FitObject):
 
     def init(self):
         self.kvlm = dict()
+
+
+class FitTreeLeaf(object):
+    def __init__(self, mode, path, sha):
+        self.mode = mode
+        self.path = path
+        self.sha = sha
+
+
+def tree_parse_one(raw, start=0):
+    # Find the space terminator of the mode
+    x = raw.find(b" ", start)
+    assert x - start == 5 or x - start == 6
+
+    # Read the mode
+    mode = raw[start:x]
+    if len(mode) == 5:
+        mode = b"0" + mode
+
+    # Find the NULL terminator of the path
+    y = raw.find(b"\x00", x)
+    path = raw[x + 1 : y]
+
+    # Read the SHA
+    raw_sha = int.from_bytes(raw[y + 1 : y + 21], "big")
+    sha = format(raw_sha, "040x")
+    return y + 21, FitTreeLeaf(mode, path.decode("utf8"), sha)
+
+
+def tree_parse(raw):
+    pos = 0
+    max = len(raw)
+    ret = list()
+    while pos < max:
+        pos, data = tree_parse_one(raw, pos)
+        ret.append(data)
+
+    return ret
