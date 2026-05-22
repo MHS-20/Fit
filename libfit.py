@@ -58,6 +58,47 @@ argsp.add_argument("path", help="Read object from <file>")
 argsp = argsubparsers.add_parser("log", help="Display history of a given commit.")
 argsp.add_argument("commit", default="HEAD", nargs="?", help="Commit to start at.")
 
+argsp = argsubparsers.add_parser("ls-tree", help="Pretty-print a tree object.")
+argsp.add_argument(
+    "-r", dest="recursive", action="store_true", help="Recurse into sub-trees"
+)
+
+argsp.add_argument("tree", help="A tree-ish object.")
+
+
+def cmd_ls_tree(args):
+    repo = repo_find()
+    ls_tree(repo, args.tree, args.recursive)
+
+
+def ls_tree(repo, ref, recursive=None, prefix=""):
+    sha = object_find(repo, ref, fmt=b"tree")
+    obj = object_read(repo, sha)
+    for item in obj.items:
+        if len(item.mode) == 5:
+            type = item.mode[0:1]
+        else:
+            type = item.mode[0:2]
+
+        match type:  # Determine the type.
+            case b"04":
+                type = "tree"
+            case b"10":
+                type = "blob"  # A regular file.
+            case b"12":
+                type = "blob"  # A symlink. Blob contents is link target.
+            case b"16":
+                type = "commit"  # A submodule
+            case _:
+                raise Exception(f"Weird tree leaf mode {item.mode}")
+
+        if not (recursive and type == "tree"):  # This is a leaf
+            print(
+                f"{'0' * (6 - len(item.mode)) + item.mode.decode('ascii')} {type} {item.sha}\t{os.path.join(prefix, item.path)}"
+            )
+        else:  # This is a branch, recurse
+            ls_tree(repo, item.sha, recursive, os.path.join(prefix, item.path))
+
 
 def cmd_init(args):
     repo_create(args.path)
@@ -486,3 +527,36 @@ def tree_parse(raw):
         ret.append(data)
 
     return ret
+
+
+def tree_leaf_sort_key(leaf):
+    if leaf.mode.startswith(b"4"):
+        return leaf.path + "/"
+    else:
+        return leaf.path
+
+
+def tree_serialize(obj):
+    obj.items.sort(key=tree_leaf_sort_key)
+    ret = b""
+    for i in obj.items:
+        ret += i.mode
+        ret += b" "
+        ret += i.path.encode("utf8")
+        ret += b"\x00"
+        sha = int(i.sha, 16)
+        ret += sha.to_bytes(20, byteorder="big")
+    return ret
+
+
+class FitTree(FitObject):
+    fmt = b"tree"
+
+    def deserialize(self, data):
+        self.items = tree_parse(data)
+
+    def serialize(self):
+        return tree_serialize(self)
+
+    def init(self):
+        self.items = list()
