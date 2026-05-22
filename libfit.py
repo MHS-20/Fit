@@ -65,39 +65,59 @@ argsp.add_argument(
 
 argsp.add_argument("tree", help="A tree-ish object.")
 
+argsp = argsubparsers.add_parser(
+    "checkout", help="Checkout a commit inside of a directory."
+)
+
+argsp.add_argument("commit", help="The commit or tree to checkout.")
+
+argsp.add_argument("path", help="The EMPTY directory to checkout on.")
+
+argsp = argsubparsers.add_parser("show-ref", help="List references.")
+
+
+def cmd_show_ref(args):
+    repo = repo_find()
+    refs = ref_list(repo)
+    show_ref(repo, refs, prefix="refs")
+
+
+def show_ref(repo, refs, with_hash=True, prefix=""):
+    if prefix:
+        prefix = prefix + "/"
+    for k, v in refs.items():
+        if type(v) == str and with_hash:
+            print(f"{v} {prefix}{k}")
+        elif type(v) == str:
+            print(f"{prefix}{k}")
+        else:
+            show_ref(repo, v, with_hash=with_hash, prefix=f"{prefix}{k}")
+
 
 def cmd_ls_tree(args):
     repo = repo_find()
     ls_tree(repo, args.tree, args.recursive)
 
 
-def ls_tree(repo, ref, recursive=None, prefix=""):
-    sha = object_find(repo, ref, fmt=b"tree")
-    obj = object_read(repo, sha)
-    for item in obj.items:
-        if len(item.mode) == 5:
-            type = item.mode[0:1]
-        else:
-            type = item.mode[0:2]
+def cmd_checkout(args):
+    repo = repo_find()
 
-        match type:  # Determine the type.
-            case b"04":
-                type = "tree"
-            case b"10":
-                type = "blob"  # A regular file.
-            case b"12":
-                type = "blob"  # A symlink. Blob contents is link target.
-            case b"16":
-                type = "commit"  # A submodule
-            case _:
-                raise Exception(f"Weird tree leaf mode {item.mode}")
+    obj = object_read(repo, object_find(repo, args.commit))
 
-        if not (recursive and type == "tree"):  # This is a leaf
-            print(
-                f"{'0' * (6 - len(item.mode)) + item.mode.decode('ascii')} {type} {item.sha}\t{os.path.join(prefix, item.path)}"
-            )
-        else:  # This is a branch, recurse
-            ls_tree(repo, item.sha, recursive, os.path.join(prefix, item.path))
+    # If the object is a commit, we grab its tree
+    if obj.fmt == b"commit":
+        obj = object_read(repo, obj.kvlm[b"tree"].decode("ascii"))
+
+    # Verify that path is an empty directory
+    if os.path.exists(args.path):
+        if not os.path.isdir(args.path):
+            raise Exception(f"Not a directory {args.path}!")
+        if os.listdir(args.path):
+            raise Exception(f"Not empty {args.path}!")
+    else:
+        os.makedirs(args.path)
+
+    tree_checkout(repo, obj, os.path.realpath(args.path))
 
 
 def cmd_init(args):
@@ -170,6 +190,49 @@ def log_graphviz(repo, sha, seen):
         p = p.decode("ascii")
         print(f"  c_{sha} -> c_{p};")
         log_graphviz(repo, p, seen)
+
+
+def ls_tree(repo, ref, recursive=None, prefix=""):
+    sha = object_find(repo, ref, fmt=b"tree")
+    obj = object_read(repo, sha)
+    for item in obj.items:
+        if len(item.mode) == 5:
+            type = item.mode[0:1]
+        else:
+            type = item.mode[0:2]
+
+        match type:  # Determine the type.
+            case b"04":
+                type = "tree"
+            case b"10":
+                type = "blob"  # A regular file.
+            case b"12":
+                type = "blob"  # A symlink. Blob contents is link target.
+            case b"16":
+                type = "commit"  # A submodule
+            case _:
+                raise Exception(f"Weird tree leaf mode {item.mode}")
+
+        if not (recursive and type == "tree"):  # This is a leaf
+            print(
+                f"{'0' * (6 - len(item.mode)) + item.mode.decode('ascii')} {type} {item.sha}\t{os.path.join(prefix, item.path)}"
+            )
+        else:  # This is a branch, recurse
+            ls_tree(repo, item.sha, recursive, os.path.join(prefix, item.path))
+
+
+def tree_checkout(repo, tree, path):
+    for item in tree.items:
+        obj = object_read(repo, item.sha)
+        dest = os.path.join(path, item.path)
+
+        if obj.fmt == b"tree":
+            os.mkdir(dest)
+            tree_checkout(repo, obj, dest)
+        elif obj.fmt == b"blob":
+            # @TODO Support symlinks (identified by mode 12****)
+            with open(dest, "wb") as f:
+                f.write(obj.blobdata)
 
 
 def main(argv=sys.argv[1:]):
