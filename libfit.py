@@ -124,6 +124,34 @@ argsp = argsubparsers.add_parser("add", help="Add files contents to the index.")
 argsp.add_argument("path", nargs="+", help="Files to add")
 
 
+def cmd_commit(args):
+    repo = repo_find()
+    index = index_read(repo)
+    # Create trees, grab back SHA for the root tree.
+    tree = tree_from_index(repo, index)
+
+    # Create the commit object itself
+    commit = commit_create(
+        repo,
+        tree,
+        object_find(repo, "HEAD"),
+        gitconfig_user_get(gitconfig_read()),
+        datetime.now(),
+        args.message,
+    )
+
+    # Update HEAD so our commit is now the tip of the active branch.
+    active_branch = branch_get_active(repo)
+    if active_branch:  # If we're on a branch, we update refs/heads/BRANCH
+        with open(
+            repo_file(repo, os.path.join("refs/heads", active_branch)), "w"
+        ) as fd:
+            fd.write(commit + "\n")
+    else:  # Otherwise, we update HEAD itself.
+        with open(repo_file(repo, "HEAD"), "w") as fd:
+            fd.write("\n")
+
+
 def cmd_add(args):
     repo = repo_find()
     add(repo, args.path)
@@ -1534,3 +1562,27 @@ def tree_from_index(repo, index):
         contents[parent].append((base, sha))
 
     return sha
+
+
+def commit_create(repo, tree, parent, author, timestamp, message):
+    # Note: for the timestamp argument, you must provide a datetime object.
+    commit = GitCommit()  # Create the new commit object.
+    commit.kvlm[b"tree"] = tree.encode("ascii")
+    if parent:
+        commit.kvlm[b"parent"] = parent.encode("ascii")
+
+    # Trim message and add a trailing \n
+    message = message.strip() + "\n"
+    # Format timezone
+    offset = int(timestamp.astimezone().utcoffset().total_seconds())
+    hours = offset // 3600
+    minutes = (offset % 3600) // 60
+    tz = "{}{:02}{:02}".format("+" if offset > 0 else "-", hours, minutes)
+
+    author = author + " " + int(timestamp.timestamp()) + " " + tz
+
+    commit.kvlm[b"author"] = author.encode("utf8")
+    commit.kvlm[b"committer"] = author.encode("utf8")
+    commit.kvlm[None] = message.encode("utf8")
+
+    return object_write(commit, repo)
