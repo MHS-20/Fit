@@ -67,7 +67,7 @@ uninstall:
 	rm -f $(INSTALL_DIR)/fit
 	@echo "  Uninstalled $(INSTALL_DIR)/fit"
 
-.HONY: bundle
+.PHONY: bundle
 bundle: $(VENV)
 	@echo "  BUNDLE"
 	$(BIN)/pip install pyinstaller
@@ -79,6 +79,7 @@ bundle: $(VENV)
 		--hidden-import fit.ignore \
 		--hidden-import fit.config \
 		--hidden-import fit.commands \
+		--hidden-import fit.remote \
 		src/fit/cli.py --name fit
 	@echo "  Binary at dist/fit"
 

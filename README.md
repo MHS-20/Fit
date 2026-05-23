@@ -1,8 +1,12 @@
-# fit
+# Fit
 
 A Git-compatible version control system, built from scratch. `fit` speaks the same
 object format as Git — repositories created with `fit` can be read by Git and
 vice versa.
+
+<div style="text-align: center;">
+<img src="fit.png" alt="Logo" width="300" />
+</div>
 
 ---
 
@@ -40,8 +44,6 @@ fit init [directory]
 Initialises a `.fit/` directory with the standard object store, refs, HEAD,
 and a default config. Defaults to the current directory if no path is given.
 
----
-
 ### `add` — Stage files
 
 ```bash
@@ -50,8 +52,6 @@ fit add <path> [path ...]
 
 Hashes each file as a blob, writes it to the object store, and updates the
 index. Re-adding an already-tracked file replaces its index entry.
-
----
 
 ### `rm` — Remove files
 
@@ -62,8 +62,6 @@ fit rm <path> [path ...]
 Removes files from the index and deletes them from the working tree. Raises
 an error if a path is not tracked or outside the worktree.
 
----
-
 ### `commit` — Record a snapshot
 
 ```bash
@@ -73,8 +71,6 @@ fit commit -m "message"
 Builds a tree from the current index, wraps it in a commit object (with
 author/committer read from `~/.fitconfig` or `$XDG_CONFIG_HOME/fit/config`),
 and advances the active branch ref. Detached HEAD writes directly to `HEAD`.
-
----
 
 ### `status` — Show working tree state
 
@@ -88,8 +84,6 @@ Prints three sections:
 - **Changes to be committed** — diff between HEAD tree and index (added, modified, deleted)
 - **Changes not staged / Untracked** — diff between index and working tree, with `.fitignore` filtering applied
 
----
-
 ### `log` — Display commit history
 
 ```bash
@@ -97,8 +91,6 @@ fit log [commit]
 ```
 
 Walks the parent chain from the given commit (defaults to `HEAD`)
-
----
 
 ### `checkout` — Restore a commit into a directory
 
@@ -109,8 +101,6 @@ fit checkout <commit> <path>
 Reads the tree of the given commit and writes it into `<path>`, which must
 exist and be empty (or not yet exist).
 
----
-
 ### `tag` — List or create tags
 
 ```bash
@@ -119,8 +109,6 @@ fit tag <name> [object]        # lightweight tag pointing to object (default HEA
 fit tag -a <name> [object]     # annotated tag (creates a tag object)
 ```
 
----
-
 ### `show-ref` — List all refs
 
 ```bash
@@ -128,8 +116,6 @@ fit show-ref
 ```
 
 Prints every ref under `.fit/refs/` with its resolved SHA.
-
----
 
 ### `rev-parse` — Resolve a name to a SHA
 
@@ -140,8 +126,6 @@ fit rev-parse [--fit-type blob|commit|tag|tree] <name>
 Resolves branches, tags, remote refs, short hashes, and `HEAD`. With
 `--fit-type`, follows tag/commit indirection until the expected type is found.
 
----
-
 ### `cat-file` — Inspect an object
 
 ```bash
@@ -150,8 +134,6 @@ fit cat-file <type> <object>
 
 Deserialises and prints the raw content of any object. `type` must match the
 object's actual type (`blob`, `commit`, `tag`, `tree`).
-
----
 
 ### `hash-object` — Hash a file into the object store
 
@@ -162,8 +144,6 @@ fit hash-object [-t type] [-w] <file>
 Computes the SHA-1 of the file content wrapped in a Git object header. `-w`
 writes it to `.fit/objects/`. Defaults to type `blob`.
 
----
-
 ### `ls-tree` — Print a tree object
 
 ```bash
@@ -171,8 +151,6 @@ fit ls-tree [-r] <tree>
 ```
 
 Lists the entries of a tree object. `-r` recurses into subtrees.
-
----
 
 ### `ls-files` — List staged files
 
@@ -183,8 +161,6 @@ fit ls-files [--verbose]
 Prints every file currently in the index. `--verbose` shows the full index
 entry: blob SHA, permissions, timestamps, device, inode, uid/gid, and flags.
 
----
-
 ### `check-ignore` — Test paths against ignore rules
 
 ```bash
@@ -194,7 +170,17 @@ fit check-ignore <path> [path ...]
 Prints each path that would be ignored. Checks scoped `.fitignore` files
 first, then absolute rules from `.fit/info/exclude` and the global config.
 
----
+### `push` — Push to a remote
+
+```bash
+fit push <url>
+fit push <url> -u <username> -p <token>
+```
+
+Pushes the local master/main branch to a remote Git server over HTTPS.
+Credentials are prompted interactively if `-u` and `-p` are not provided.
+
+For GitHub, use a **Personal Access Token** as the password
 
 ## Implementation highlights
 
@@ -248,3 +234,22 @@ if their name had a trailing `/`, so a directory `foo` sorts after a file
 `foo.c`. `tree_serialize` in `objects.py` applies this comparator before
 writing, ensuring the SHA-1 of a tree is deterministic regardless of insertion
 order.
+
+### Smart HTTP push protocol
+
+remote.py implements Git's smart HTTP transfer protocol using only the
+standard library. A push involves three stages.
+
+1. First, a GET to <url>/info/refs?service=git-receive-pack discovers the
+remote's current branch tip. The response is encoded in pkt-line format:
+every chunk is prefixed with a 4-hex-digit length that includes the length
+field itself, and the special token 0000 marks section boundaries.
+2. Second, the local and remote object graphs are walked recursively — following
+commit parents and tree entries — to compute the set of objects the remote is
+missing. Only this delta is sent, not the entire history.
+3. Third, a POST to <url>/git-receive-pack sends a pkt-line ref-update header
+followed by a PACK file containing all missing objects. Each object in the
+pack is encoded with a variable-length type-and-size header (3 bits for type,
+then a sequence of 7-bit groups) and zlib-compressed content. The pack file
+itself ends with a SHA-1 checksum of its own contents. The server replies with
+unpack ok on success

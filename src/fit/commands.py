@@ -20,7 +20,7 @@ from fit.objects import (
 )
 from fit.refs import ref_create, ref_list, ref_resolve
 from fit.repository import repo_dir, repo_file, repo_find, repo_create
-
+from fit.remote import push
 
 # ---------------------------------------------------------------------------
 # Branch helpers
@@ -620,3 +620,19 @@ def cmd_commit(args):
     else:
         with open(repo_file(repo, "HEAD"), "w") as fd:
             fd.write("\n")
+
+
+def cmd_push(args):
+    import getpass
+
+    repo = repo_find()
+
+    username = args.username
+    password = args.password
+
+    if not username:
+        username = input("Username: ")
+    if not password:
+        password = getpass.getpass("Password / token: ")
+
+    push(repo, args.remote, username, password)

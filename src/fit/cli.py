@@ -17,6 +17,7 @@ from fit.commands import (
     cmd_show_ref,
     cmd_status,
     cmd_tag,
+    cmd_push,
 )
 
 # ---------------------------------------------------------------------------
@@ -149,6 +150,24 @@ argsp.add_argument(
     help="Message to associate with this commit.",
 )
 
+# push
+argsp = argsubparsers.add_parser("push", help="Push local master branch to a remote.")
+argsp.add_argument("remote", help="Remote URL (e.g. https://github.com/user/repo.git)")
+argsp.add_argument(
+    "-u",
+    metavar="username",
+    dest="username",
+    default=None,
+    help="Git username (prompted if omitted)",
+)
+argsp.add_argument(
+    "-p",
+    metavar="password",
+    dest="password",
+    default=None,
+    help="Git password or personal access token (prompted if omitted)",
+)
+
 
 # ---------------------------------------------------------------------------
 # Dispatch
@@ -178,6 +197,8 @@ def main(argv=sys.argv[1:]):
             cmd_ls_files(args)
         case "ls-tree":
             cmd_ls_tree(args)
+        case "push":
+            cmd_push(args)
         case "rev-parse":
             cmd_rev_parse(args)
         case "rm":

@@ -58,7 +58,8 @@ def repo_create(path):
         if not os.path.isdir(repo.worktree):
             raise Exception(f"{path} is not a directory!")
         if os.path.exists(repo.fitdir) and os.listdir(repo.fitdir):
-            raise Exception(f"{path} is not empty!")
+            print(f"{path} repo already initialized")
+            return repo
     else:
         os.makedirs(repo.worktree)
 
