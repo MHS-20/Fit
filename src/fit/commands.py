@@ -292,6 +292,17 @@ def cmd_status_branch(repo):
 
 def cmd_status_head_index(repo, index):
     print("Changes to be committed:")
+
+    branch = branch_get_active(repo)
+    ref = os.path.join("refs/heads", branch) if branch else "HEAD"
+    head_sha = ref_resolve(repo, ref)
+
+    if not head_sha:
+        # No commits yet — everything in the index is "new"
+        for entry in index.entries:
+            print("  added:   ", entry.name)
+        return
+
     head = tree_to_dict(repo, "HEAD")
     for entry in index.entries:
         if entry.name in head:
@@ -524,11 +535,24 @@ def cmd_commit(args):
     index = index_read(repo)
     tree = tree_from_index(repo, index)
 
+    author = fitconfig_user_get(fitconfig_read())
+    if not author:
+        raise Exception(
+            "User not configured. Add to ~/.fitconfig:\n"
+            "[user]\n"
+            "    name = Your Name\n"
+            "    email = you@example.com"
+        )
+
+    branch = branch_get_active(repo)
+    ref = os.path.join("refs/heads", branch) if branch else "HEAD"
+    parent = ref_resolve(repo, ref)
+
     commit = commit_create(
         repo,
         tree,
-        object_find(repo, "HEAD"),
-        fitconfig_user_get(fitconfig_read()),
+        parent,
+        author,
         datetime.now(),
         args.message,
     )

@@ -3,6 +3,7 @@ import os
 import zlib
 
 from fit.repository import repo_file
+from fit.refs import ref_resolve
 
 
 class FitObject(object):
@@ -291,7 +292,6 @@ def object_resolve(repo, name):
     Handles: HEAD, short/long hashes, tags, branches, remote branches.
     """
     import re
-    from refs import ref_resolve
 
     candidates = list()
     hashRE = re.compile(r"^[0-9A-Fa-f]{4,40}$")
@@ -313,8 +313,6 @@ def object_resolve(repo, name):
             for f in os.listdir(path):
                 if f.startswith(rem):
                     candidates.append(prefix + f)
-
-    from refs import ref_resolve
 
     as_tag = ref_resolve(repo, "refs/tags/" + name)
     if as_tag:

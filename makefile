@@ -64,6 +64,21 @@ uninstall:
 	$(PIP) uninstall -y $(TARGET)
 	@echo "  Uninstalled $(TARGET)"
 
+.HONY: bundle
+bundle: $(VENV)
+	@echo "  BUNDLE"
+	$(BIN)/pip install pyinstaller
+	$(BIN)/pyinstaller --onefile --paths src \
+		--hidden-import fit.refs \
+		--hidden-import fit.objects \
+		--hidden-import fit.repository \
+		--hidden-import fit.index \
+		--hidden-import fit.ignore \
+		--hidden-import fit.config \
+		--hidden-import fit.commands \
+		src/fit/cli.py --name fit
+	@echo "  Binary at dist/fit"
+
 .PHONY: help
 help:
 	@echo "Targets:"

@@ -1,3 +1,7 @@
 __pycache__/
 .venv/
 fit.egg-info/
+build/*
+dist/*
+fit.spec
+.fit/
