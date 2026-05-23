@@ -13,6 +13,12 @@ vice versa.
 ## Installation
 
 ```bash
+cat << 'EOF' > ~/.fitconfig
+[user]
+    name = Your Name
+    email = you@example.com
+EOF
+
 make          # create venv, install dependencies, install fit in editable mode
 make install  # build a wheel and install fit as a system-wide command
 ```
