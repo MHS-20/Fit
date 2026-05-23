@@ -96,12 +96,7 @@ Prints three sections:
 fit log [commit]
 ```
 
-Walks the parent chain from the given commit (defaults to `HEAD`) and outputs
-a Graphviz `digraph` — pipe it to `dot` to render a graph:
-
-```bash
-fit log | dot -Tpng -o log.png
-```
+Walks the parent chain from the given commit (defaults to `HEAD`)
 
 ---
 

@@ -357,22 +357,39 @@ def cmd_status_index_worktree(repo, index):
 # ---------------------------------------------------------------------------
 
 
-def log_graphviz(repo, sha, seen):
+def log(repo, sha, seen):
     if sha in seen:
         return
     seen.add(sha)
 
     commit = object_read(repo, sha)
-    message = commit.kvlm[None].decode("utf8").strip()
-    message = message.replace("\\", "\\\\")
-    message = message.replace('"', '\\"')
-    if "\n" in message:
-        message = message[: message.index("\n")]
-
-    print(f'  c_{sha} [label="{sha[0:7]}: {message}"]')
     assert commit.fmt == b"commit"
 
-    if b"parent" not in commit.kvlm.keys():
+    message = commit.kvlm[None].decode("utf8").strip()
+    if "\n" in message:
+        short = message[: message.index("\n")]
+    else:
+        short = message
+
+    author_raw = commit.kvlm.get(b"author", b"Unknown").decode("utf8")
+    parts = author_raw.rsplit(" ", 2)
+    author_name = parts[0] if len(parts) == 3 else author_raw
+    timestamp = int(parts[1]) if len(parts) == 3 else 0
+    tz = parts[2] if len(parts) == 3 else "+0000"
+    date = datetime.fromtimestamp(timestamp).strftime("%a %b %d %H:%M:%S %Y")
+
+    refs = _refs_for_sha(repo, sha)
+    ref_label = f" ({', '.join(refs)})" if refs else ""
+
+    print(f"\033[33mcommit {sha}{ref_label}\033[0m")
+    print(f"Author: {author_name}")
+    print(f"Date:   {date} {tz}")
+    print()
+    for line in message.splitlines():
+        print(f"    {line}")
+    print()
+
+    if b"parent" not in commit.kvlm:
         return
 
     parents = commit.kvlm[b"parent"]
@@ -380,9 +397,44 @@ def log_graphviz(repo, sha, seen):
         parents = [parents]
 
     for p in parents:
-        p = p.decode("ascii")
-        print(f"  c_{sha} -> c_{p};")
-        log_graphviz(repo, p, seen)
+        log(repo, p.decode("ascii"), seen)
+
+
+def _refs_for_sha(repo, sha):
+    """Return a list of ref names (HEAD, branch names, tags) pointing to sha."""
+    result = []
+    refs = ref_list(repo)
+
+    # Check if HEAD points here directly or via a branch
+    head_path = repo_file(repo, "HEAD")
+    with open(head_path, "r") as f:
+        head_content = f.read().strip()
+
+    if head_content.startswith("ref: "):
+        active_ref = head_content[5:]  # e.g. refs/heads/master
+        active_sha = ref_resolve(repo, active_ref)
+        if active_sha == sha:
+            branch_name = active_ref.replace("refs/heads/", "")
+            result.append(f"\033[36mHEAD -> {branch_name}\033[0m")
+    else:
+        if head_content == sha:
+            result.append("\033[36mHEAD\033[0m")
+
+    def _walk(refs_dict, prefix):
+        for k, v in refs_dict.items():
+            if isinstance(v, dict):
+                _walk(v, f"{prefix}/{k}")
+            elif v == sha:
+                name = f"{prefix}/{k}"
+                if name.startswith("refs/heads/"):
+                    result.append(f"\033[32m{name.replace('refs/heads/', '')}\033[0m")
+                elif name.startswith("refs/tags/"):
+                    result.append(
+                        f"\033[33mtag: {name.replace('refs/tags/', '')}\033[0m"
+                    )
+
+    _walk(refs, "refs")
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -421,10 +473,12 @@ def cmd_hash_object(args):
 
 def cmd_log(args):
     repo = repo_find()
-    print("digraph wyaglog{")
-    print("  node[shape=rect]")
-    log_graphviz(repo, object_find(repo, args.commit), set())
-    print("}")
+    branch = branch_get_active(repo)
+    ref = os.path.join("refs/heads", branch) if branch else "HEAD"
+    sha = ref_resolve(repo, ref)
+    if not sha:
+        raise Exception("No commits yet.")
+    log(repo, sha, set())
 
 
 def cmd_ls_tree(args):

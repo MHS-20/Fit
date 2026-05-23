@@ -54,15 +54,18 @@ clean:
 	@echo "  Cleaned."
 
 PREFIX  = /usr/local
+INSTALL_DIR = $(HOME)/.local/bin
 .PHONY: install
-install: build
-	$(PIP) install $(DIST)/*.whl
-	@echo "  Installed $(TARGET)"
+install: bundle
+	@echo "  INSTALL"
+	cp dist/fit $(INSTALL_DIR)/fit
+	chmod +x $(INSTALL_DIR)/fit
+	@echo "  Installed to $(INSTALL_DIR)/fit"
 
 .PHONY: uninstall
 uninstall:
-	$(PIP) uninstall -y $(TARGET)
-	@echo "  Uninstalled $(TARGET)"
+	rm -f $(INSTALL_DIR)/fit
+	@echo "  Uninstalled $(INSTALL_DIR)/fit"
 
 .HONY: bundle
 bundle: $(VENV)
