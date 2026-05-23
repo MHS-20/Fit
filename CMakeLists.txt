@@ -13,15 +13,15 @@ find_path(INIH_INCLUDE_DIR NAMES ini.h)
 find_library(INIH_LIBRARY NAMES inih)
 
 add_executable(fit
-    main.cpp
-    Commands.cpp
-    Repository.cpp
-    Objects.cpp
-    Refs.cpp
-    Index.cpp
-    Ignore.cpp
-    Config.cpp
-    Remote.cpp
+    src/main.cpp
+    src/Commands.cpp
+    src/Repository.cpp
+    src/Objects.cpp
+    src/Refs.cpp
+    src/Index.cpp
+    src/Ignore.cpp
+    src/Config.cpp
+    src/Remote.cpp
 )
 
 target_include_directories(fit PRIVATE ${INIH_INCLUDE_DIR})
