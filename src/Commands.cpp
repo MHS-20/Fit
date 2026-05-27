@@ -6,7 +6,9 @@
 #include "Refs.hpp"
 #include "Remote.hpp"
 #include "Repository.hpp"
+#include <algorithm>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -66,12 +68,26 @@ void cmd_checkout(const std::string &commit, const std::string &path) {
   std::string sha = object_find(repo, commit, "commit");
   auto c = std::dynamic_pointer_cast<FitCommit>(object_read(repo, sha));
   std::string tree_sha = c->kvlm["tree"][0];
-  auto t = std::dynamic_pointer_cast<FitTree>(object_read(repo, tree_sha));
-  for (auto &item : t->items) {
-    auto b = std::dynamic_pointer_cast<FitBlob>(object_read(repo, item.sha));
-    std::ofstream out(dest / item.path, std::ios::binary);
-    out.write(reinterpret_cast<char *>(b->blobdata.data()), b->blobdata.size());
-  }
+
+  std::function<void(const std::string &, const fs::path &)> checkout_tree;
+  checkout_tree = [&](const std::string &t_sha, const fs::path &base) {
+    auto t = std::dynamic_pointer_cast<FitTree>(object_read(repo, t_sha));
+    for (auto &item : t->items) {
+      fs::path target = base / item.path;
+      if (item.mode.rfind("04", 0) == 0) { // tree
+        fs::create_directories(target);
+        checkout_tree(item.sha, target);
+      } else {
+        auto b =
+            std::dynamic_pointer_cast<FitBlob>(object_read(repo, item.sha));
+        std::ofstream out(target, std::ios::binary);
+        out.write(reinterpret_cast<char *>(b->blobdata.data()),
+                  b->blobdata.size());
+      }
+    }
+  };
+
+  checkout_tree(tree_sha, dest);
 }
 
 void show_ref_internal(const RefMap &refs, bool with_hash,
@@ -154,6 +170,11 @@ void cmd_add(const std::vector<std::string> &paths) {
     e.uid = st.st_uid;
     e.gid = st.st_gid;
     e.fsize = fs::file_size(ap);
+    idx.entries.erase(std::remove_if(idx.entries.begin(), idx.entries.end(),
+                                     [&](const FitIndexEntry &entry) {
+                                       return entry.name == e.name;
+                                     }),
+                      idx.entries.end());
     idx.entries.push_back(e);
   }
   index_write(repo, idx);
@@ -180,8 +201,22 @@ void cmd_commit(const std::string &message) {
   commit.kvlm["committer"].push_back(identity);
   commit.kvlm[""].push_back(message + "\n");
   std::string commit_sha = object_write(commit, repo);
-  std::ofstream h(repo_file(repo, "refs/heads/master", true));
-  h << commit_sha << "\n";
+
+  std::string head_ref = ref_resolve(repo, "HEAD");
+  // Re-read HEAD to get the branch path
+  std::ifstream head_f(repo_file(repo, "HEAD"));
+  std::string head_line;
+  std::getline(head_f, head_line);
+  if (head_line.rfind("ref: ", 0) == 0) {
+    std::string branch_ref = head_line.substr(5);
+    branch_ref.erase(branch_ref.find_last_not_of(" \t\r\n") + 1);
+    std::ofstream h(repo_file(repo, branch_ref, true));
+    h << commit_sha << "\n";
+  } else {
+    // detached HEAD — write SHA directly
+    std::ofstream h(repo_file(repo, "HEAD"));
+    h << commit_sha << "\n";
+  }
 }
 
 void cmd_status() {

@@ -184,6 +184,8 @@ std::shared_ptr<FitObject> object_read(const FitRepository &repo,
     obj = std::make_shared<FitTree>();
   else if (fmt == "tag")
     obj = std::make_shared<FitTag>();
+  else
+    throw std::runtime_error("Unknown object type: " + fmt);
   obj->deserialize(content);
   return obj;
 }
