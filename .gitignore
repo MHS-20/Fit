@@ -2,3 +2,4 @@ build/*
 .fit/
 vcpkg_installed/
 .vcpkg/
+.git/*

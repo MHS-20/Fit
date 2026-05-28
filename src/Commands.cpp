@@ -149,10 +149,48 @@ void cmd_rm(const std::vector<std::string> &paths) {
   index_write(repo, idx);
 }
 
-void cmd_add(const std::vector<std::string> &paths) {
+std::vector<std::string> collect_all_files(const FitRepository &repo) {
+  std::vector<std::string> paths;
+  for (const auto &entry : fs::recursive_directory_iterator(repo.worktree)) {
+    if (!entry.is_regular_file())
+      continue;
+    const fs::path &p = entry.path();
+    // skip .fit/ and .git/
+    for (const auto &part : p.lexically_relative(repo.worktree)) {
+      if (part == ".fit" || part == ".git")
+        goto next;
+    }
+    paths.push_back(p.string());
+  next:;
+  }
+  return paths;
+}
+
+void cmd_add(const std::vector<std::string> &paths, bool all) {
   auto repo = repo_find();
+
+  std::vector<std::string> resolved_paths = paths;
+  if (all) {
+    FitIgnore ignore = fitignore_read(repo);
+    for (const auto &entry : fs::recursive_directory_iterator(repo.worktree)) {
+      if (!entry.is_regular_file())
+        continue;
+      auto rel = entry.path().lexically_relative(repo.worktree);
+      if (*rel.begin() == ".fit" || *rel.begin() == ".git")
+        continue;
+      std::string rel_str = rel.string();
+      if (check_ignore(ignore, rel_str))
+        continue;
+      resolved_paths.push_back(entry.path().string());
+    }
+  }
+  if (resolved_paths.empty()) {
+    std::cerr << "Nothing specified, nothing added.\n";
+    return;
+  }
+
   FitIndex idx = index_read(repo);
-  for (auto &p : paths) {
+  for (auto &p : resolved_paths) {
     fs::path ap = fs::absolute(p);
     std::ifstream f(ap, std::ios::binary);
     std::string sha = object_hash(f, "blob", repo);
@@ -180,14 +218,46 @@ void cmd_add(const std::vector<std::string> &paths) {
   index_write(repo, idx);
 }
 
+static std::string build_tree(const FitRepository &repo,
+                              const std::vector<FitIndexEntry> &entries,
+                              const std::string &prefix) {
+  FitTree tree;
+  std::map<std::string, std::vector<FitIndexEntry>> subdirs;
+
+  for (auto &e : entries) {
+    std::string name = e.name;
+    if (!prefix.empty()) {
+      if (name.rfind(prefix + "/", 0) != 0)
+        continue;
+      name = name.substr(prefix.size() + 1);
+    }
+    auto slash = name.find('/');
+    if (slash == std::string::npos) {
+      // direct file in this directory
+      tree.items.push_back({"100644", name, e.sha});
+    } else {
+      // belongs to a subdir
+      std::string subdir = name.substr(0, slash);
+      subdirs[subdir].push_back(e);
+    }
+  }
+
+  // recursively build subtrees
+  for (auto &[subdir, sub_entries] : subdirs) {
+    std::string sub_prefix = prefix.empty() ? subdir : prefix + "/" + subdir;
+    std::string sub_sha = build_tree(repo, sub_entries, sub_prefix);
+    tree.items.push_back({"040000", subdir, sub_sha});
+  }
+
+  return object_write(tree, repo);
+}
+
 void cmd_commit(const std::string &message) {
   auto repo = repo_find();
   FitIndex idx = index_read(repo);
-  FitTree tree;
-  for (auto &e : idx.entries) {
-    tree.items.push_back({"100644", e.name, e.sha});
-  }
-  std::string tree_sha = object_write(tree, repo);
+
+  std::string tree_sha = build_tree(repo, idx.entries, "");
+
   FitCommit commit;
   commit.kvlm["tree"].push_back(tree_sha);
   std::string parent = ref_resolve(repo, "HEAD");
@@ -202,8 +272,6 @@ void cmd_commit(const std::string &message) {
   commit.kvlm[""].push_back(message + "\n");
   std::string commit_sha = object_write(commit, repo);
 
-  std::string head_ref = ref_resolve(repo, "HEAD");
-  // Re-read HEAD to get the branch path
   std::ifstream head_f(repo_file(repo, "HEAD"));
   std::string head_line;
   std::getline(head_f, head_line);
@@ -213,10 +281,10 @@ void cmd_commit(const std::string &message) {
     std::ofstream h(repo_file(repo, branch_ref, true));
     h << commit_sha << "\n";
   } else {
-    // detached HEAD — write SHA directly
     std::ofstream h(repo_file(repo, "HEAD"));
     h << commit_sha << "\n";
   }
+  std::cout << "commit " << commit_sha << "\n";
 }
 
 void cmd_status() {
