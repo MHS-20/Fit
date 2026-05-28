@@ -8,7 +8,6 @@ int main(int argc, char **argv) {
   CLI::App app{"Fit version control system"};
   app.require_subcommand(1);
 
-  // ── per-command option storage ───────────────────────────────────────────
   std::string init_path = ".";
   std::string cat_type, cat_obj;
   std::string hash_type = "blob", hash_path;
@@ -28,7 +27,6 @@ int main(int argc, char **argv) {
   bool config_global = false;
   std::string config_key, config_value;
 
-  // ── subcommand registration ──────────────────────────────────────────────
   auto *init_cmd = app.add_subcommand("init", "Initialize empty repo");
   init_cmd->add_option("path", init_path);
 
