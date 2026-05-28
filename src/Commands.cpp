@@ -291,7 +291,59 @@ void cmd_status() {
   auto repo = repo_find();
   FitIndex idx = index_read(repo);
   FitIgnore rules = fitignore_read(repo);
+
+  // Build a map of path -> sha from the HEAD commit tree (empty if no commits
+  // yet)
+  std::map<std::string, std::string> head_tree;
+  std::string head_sha = ref_resolve(repo, "HEAD");
+  if (!head_sha.empty()) {
+    auto head_obj = object_read(repo, head_sha);
+    auto head_commit = std::dynamic_pointer_cast<FitCommit>(head_obj);
+    if (head_commit && head_commit->kvlm.count("tree")) {
+      std::string tree_sha = head_commit->kvlm["tree"][0];
+      // Flatten the tree recursively into path->sha map
+      std::function<void(const std::string &, const std::string &)> walk_tree;
+      walk_tree = [&](const std::string &sha, const std::string &prefix) {
+        auto obj = std::dynamic_pointer_cast<FitTree>(object_read(repo, sha));
+        if (!obj)
+          return;
+        for (auto &item : obj->items) {
+          std::string full =
+              prefix.empty() ? item.path : prefix + "/" + item.path;
+          if (item.mode.rfind("04", 0) == 0) {
+            walk_tree(item.sha, full);
+          } else {
+            head_tree[full] = item.sha;
+          }
+        }
+      };
+      walk_tree(tree_sha, "");
+    }
+  }
+
+  // Changes to be committed: compare index vs HEAD
   std::cout << "On branch master\n\nChanges to be committed:\n";
+  for (auto &e : idx.entries) {
+    if (head_tree.count(e.name) == 0) {
+      std::cout << "\tnew file:   " << e.name << "\n";
+    } else if (head_tree[e.name] != e.sha) {
+      std::cout << "\tmodified:   " << e.name << "\n";
+    }
+  }
+  // Files in HEAD but not in index = deleted
+  for (auto &[path, sha] : head_tree) {
+    bool in_index = false;
+    for (auto &e : idx.entries)
+      if (e.name == path) {
+        in_index = true;
+        break;
+      }
+    if (!in_index)
+      std::cout << "\tdeleted:    " << path << "\n";
+  }
+
+  // Changes not staged: compare working tree vs index
+  std::cout << "\nChanges not staged for commit:\n";
   for (auto &e : idx.entries) {
     if (!fs::exists(repo.worktree / e.name)) {
       std::cout << "\tdeleted:    " << e.name << "\n";
@@ -303,6 +355,8 @@ void cmd_status() {
       }
     }
   }
+
+  // Untracked files
   std::cout << "\nUntracked files:\n";
   for (auto &entry : fs::recursive_directory_iterator(repo.worktree)) {
     if (entry.is_regular_file()) {
@@ -311,8 +365,10 @@ void cmd_status() {
         continue;
       bool tracked = false;
       for (auto &e : idx.entries) {
-        if (e.name == rel)
+        if (e.name == rel) {
           tracked = true;
+          break;
+        }
       }
       if (!tracked && !check_ignore(rules, rel)) {
         std::cout << "\t" << rel << "\n";
@@ -320,7 +376,6 @@ void cmd_status() {
     }
   }
 }
-
 void cmd_push(const std::string &remote_url, const std::string &username,
               const std::string &password) {
   auto repo = repo_find();
