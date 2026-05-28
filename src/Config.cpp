@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <ini.h>
 
 namespace fs = std::filesystem;
@@ -55,6 +56,17 @@ std::map<std::string, std::map<std::string, std::string>> fitconfig_read() {
       parse_ini_file(p, conf);
   }
 
+  if (!conf.count("user") || !conf["user"].count("name") ||
+      !conf["user"].count("email")) {
+    fs::path git_p1 =
+        xdg ? fs::path(xdg) / "git/config" : home / ".config/git/config";
+    fs::path git_p2 = home / ".gitconfig";
+    for (const auto &p : {git_p1, git_p2}) {
+      if (fs::exists(p))
+        parse_ini_file(p, conf);
+    }
+  }
+
   return conf;
 }
 
@@ -66,4 +78,25 @@ std::string fitconfig_user_get(
            ">";
   }
   return "";
+}
+
+void fitconfig_set(const fs::path &config_path, const std::string &section,
+                   const std::string &key, const std::string &value) {
+  ConfigMap conf;
+  if (fs::exists(config_path))
+    parse_ini_file(config_path, conf);
+  conf[section][key] = value;
+
+  fs::create_directories(config_path.parent_path());
+  std::ofstream out(config_path);
+  if (!out)
+    throw std::runtime_error("Cannot write config: " + config_path.string());
+
+  std::map<std::string, std::map<std::string, std::string>> ordered(
+      conf.begin(), conf.end());
+  for (auto &[sec, kvs] : ordered) {
+    out << "[" << sec << "]\n";
+    for (auto &[k, v] : kvs)
+      out << "\t" << k << " = " << v << "\n";
+  }
 }

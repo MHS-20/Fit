@@ -1,11 +1,9 @@
 #include "Ignore.hpp"
 #include "Index.hpp"
-#include "Objects.hpp"
 #include <cstdlib>
 #include <fnmatch.h>
 #include <fstream>
 #include <optional>
-#include <sstream>
 
 std::vector<std::pair<std::string, bool>>
 fitignore_parse(const std::vector<std::string> &lines) {

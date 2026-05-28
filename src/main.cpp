@@ -1,9 +1,7 @@
 #include "Commands.hpp"
 #include <CLI/CLI.hpp>
-#include <functional>
 #include <iostream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 int main(int argc, char **argv) {
@@ -26,6 +24,9 @@ int main(int argc, char **argv) {
   std::vector<std::string> add_paths;
   std::string commit_msg;
   std::string remote_url, remote_user, remote_pass;
+  std::string branch_name, switch_name;
+  bool config_global = false;
+  std::string config_key, config_value;
 
   // ── subcommand registration ──────────────────────────────────────────────
   auto *init_cmd = app.add_subcommand("init", "Initialize empty repo");
@@ -70,6 +71,20 @@ int main(int argc, char **argv) {
   auto *status_cmd =
       app.add_subcommand("status", "Show tracking changes state");
 
+  auto *diff_cmd =
+      app.add_subcommand("diff", "Show changes in working tree vs index");
+
+  auto *branch_cmd = app.add_subcommand("branch", "List or create branches");
+  branch_cmd->add_option("name", branch_name);
+
+  auto *switch_cmd = app.add_subcommand("switch", "Switch to a branch");
+  switch_cmd->add_option("name", switch_name)->required();
+
+  auto *config_cmd = app.add_subcommand("config", "Get or set config values");
+  config_cmd->add_flag("--global", config_global);
+  config_cmd->add_option("key", config_key)->required();
+  config_cmd->add_option("value", config_value)->required();
+
   auto *push_cmd =
       app.add_subcommand("push", "Push changes to remote network server");
   push_cmd->add_option("url", remote_url)->required();
@@ -91,6 +106,11 @@ int main(int argc, char **argv) {
       {add_cmd, [&] { cmd_add(add_paths, add_all); }},
       {commit_cmd, [&] { cmd_commit(commit_msg); }},
       {status_cmd, [&] { cmd_status(); }},
+      {diff_cmd, [&] { cmd_diff(); }},
+      {branch_cmd, [&] { cmd_branch(branch_name); }},
+      {switch_cmd, [&] { cmd_switch(switch_name); }},
+      {config_cmd,
+       [&] { cmd_config(config_global, config_key, config_value); }},
       {push_cmd, [&] { cmd_push(remote_url, remote_user, remote_pass); }},
   };
 

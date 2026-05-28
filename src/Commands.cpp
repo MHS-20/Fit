@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -292,8 +293,19 @@ void cmd_status() {
   FitIndex idx = index_read(repo);
   FitIgnore rules = fitignore_read(repo);
 
-  // Build a map of path -> sha from the HEAD commit tree (empty if no commits
-  // yet)
+  std::string branch_name = "HEAD (detached)";
+  {
+    std::ifstream head_f(repo_file(repo, "HEAD"));
+    std::string head_line;
+    std::getline(head_f, head_line);
+    if (head_line.rfind("ref: refs/heads/", 0) == 0)
+      branch_name = head_line.substr(16);
+    else if (head_line.rfind("ref: ", 0) == 0)
+      branch_name = head_line.substr(5);
+    branch_name.erase(branch_name.find_last_not_of(" \t\r\n") + 1);
+  }
+
+  // Build a map of path -> sha from the HEAD commit tree
   std::map<std::string, std::string> head_tree;
   std::string head_sha = ref_resolve(repo, "HEAD");
   if (!head_sha.empty()) {
@@ -322,7 +334,7 @@ void cmd_status() {
   }
 
   // Changes to be committed: compare index vs HEAD
-  std::cout << "On branch master\n\nChanges to be committed:\n";
+  std::cout << "On branch " << branch_name << "\n\nChanges to be committed:\n";
   for (auto &e : idx.entries) {
     if (head_tree.count(e.name) == 0) {
       std::cout << "\tnew file:   " << e.name << "\n";
@@ -376,6 +388,131 @@ void cmd_status() {
     }
   }
 }
+void cmd_diff() {
+  auto repo = repo_find();
+  FitIndex idx = index_read(repo);
+
+  for (auto &e : idx.entries) {
+    fs::path abs_path = repo.worktree / e.name;
+    if (!fs::exists(abs_path)) {
+      std::cout << "deleted: " << e.name << "\n";
+      continue;
+    }
+
+    std::ifstream f(abs_path, std::ios::binary);
+    std::string live_sha = object_hash(f, "blob", repo);
+    if (live_sha == e.sha)
+      continue;
+
+    std::cout << "diff --fit a/" << e.name << " b/" << e.name << "\n";
+    std::cout << "--- a/" << e.name << "\n";
+    std::cout << "+++ b/" << e.name << "\n";
+
+    auto index_obj =
+        std::dynamic_pointer_cast<FitBlob>(object_read(repo, e.sha));
+    std::string old_text(index_obj->blobdata.begin(),
+                         index_obj->blobdata.end());
+
+    std::ifstream live_f(abs_path, std::ios::binary);
+    std::string new_text((std::istreambuf_iterator<char>(live_f)),
+                         std::istreambuf_iterator<char>());
+
+    auto split_lines = [](const std::string &s) {
+      std::vector<std::string> lines;
+      std::istringstream ss(s);
+      std::string line;
+      while (std::getline(ss, line))
+        lines.push_back(line);
+      return lines;
+    };
+
+    auto old_lines = split_lines(old_text);
+    auto new_lines = split_lines(new_text);
+
+    size_t i = 0, j = 0;
+    while (i < old_lines.size() || j < new_lines.size()) {
+      if (i < old_lines.size() && j < new_lines.size() &&
+          old_lines[i] == new_lines[j]) {
+        std::cout << " " << old_lines[i] << "\n";
+        ++i;
+        ++j;
+      } else if (i < old_lines.size()) {
+        std::cout << "-" << old_lines[i] << "\n";
+        ++i;
+      } else {
+        std::cout << "+" << new_lines[j] << "\n";
+        ++j;
+      }
+    }
+  }
+}
+
+void cmd_branch(const std::string &name) {
+  auto repo = repo_find();
+  if (name.empty()) {
+    std::string current;
+    {
+      std::ifstream head_f(repo_file(repo, "HEAD"));
+      std::string line;
+      std::getline(head_f, line);
+      if (line.rfind("ref: refs/heads/", 0) == 0)
+        current = line.substr(16);
+      current.erase(current.find_last_not_of(" \t\r\n") + 1);
+    }
+    fs::path heads_dir = repo.fitdir / "refs/heads";
+    if (fs::exists(heads_dir)) {
+      std::vector<std::string> branches;
+      for (auto &p : fs::directory_iterator(heads_dir))
+        branches.push_back(p.path().filename().string());
+      std::sort(branches.begin(), branches.end());
+      for (auto &b : branches)
+        std::cout << (b == current ? "* " : "  ") << b << "\n";
+    }
+    return;
+  }
+  std::string head_sha = ref_resolve(repo, "HEAD");
+  if (head_sha.empty())
+    throw std::runtime_error("Cannot create branch: no commits yet");
+  ref_create(repo, "heads/" + name, head_sha);
+  std::cout << "Branch '" << name << "' created at " << head_sha.substr(0, 7)
+            << "\n";
+}
+
+void cmd_switch(const std::string &name) {
+  auto repo = repo_find();
+  fs::path branch_ref = repo.fitdir / "refs/heads" / name;
+  if (!fs::exists(branch_ref))
+    throw std::runtime_error("Branch '" + name + "' not found");
+  std::ofstream head(repo_file(repo, "HEAD"));
+  head << "ref: refs/heads/" << name << "\n";
+  std::cout << "Switched to branch '" << name << "'\n";
+}
+
+void cmd_config(bool global_flag, const std::string &key,
+                const std::string &value) {
+  auto dot = key.find('.');
+  if (dot == std::string::npos)
+    throw std::runtime_error(
+        "Key must be in section.key format (e.g. user.name)");
+  std::string section = key.substr(0, dot);
+  std::string k = key.substr(dot + 1);
+
+  fs::path config_path;
+  if (global_flag) {
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    fs::path home = std::getenv("HOME") ? std::getenv("HOME") : "";
+    config_path =
+        xdg ? fs::path(xdg) / "fit/config" : home / ".config/fit/config";
+  } else {
+    auto repo = repo_find();
+    config_path = repo.fitdir / "config";
+  }
+
+  fitconfig_set(config_path, section, k, value);
+  std::cout << "Set " << key << " = " << value << " in " << config_path.string()
+            << "\n";
+}
+
 void cmd_push(const std::string &remote_url, const std::string &username,
               const std::string &password) {
   auto repo = repo_find();

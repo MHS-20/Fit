@@ -15,5 +15,10 @@ void cmd_rm(const std::vector<std::string> &paths);
 void cmd_add(const std::vector<std::string> &paths, bool all = false);
 void cmd_commit(const std::string &message);
 void cmd_status();
+void cmd_diff();
+void cmd_branch(const std::string &name);
+void cmd_switch(const std::string &name);
+void cmd_config(bool global_flag, const std::string &key,
+                const std::string &value);
 void cmd_push(const std::string &remote_url, const std::string &username,
               const std::string &password);

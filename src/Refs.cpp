@@ -38,8 +38,7 @@ RefMap ref_list(const FitRepository &repo, fs::path path) {
     return ret;
   }
 
-  // Collect elements and sort them alphabetically to match Python's
-  // sorted(os.listdir)
+  // Collect elements and sort them alphabetically
   std::vector<fs::directory_entry> entries;
   for (const auto &entry : fs::directory_iterator(path)) {
     entries.push_back(entry);
