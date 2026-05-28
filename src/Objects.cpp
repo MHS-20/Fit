@@ -1,11 +1,10 @@
 #include "Objects.hpp"
 #include "Refs.hpp"
+#include "Utils.hpp"
 #include <algorithm>
 #include <cstring>
 #include <fstream>
-#include <iomanip>
 #include <openssl/sha.h>
-#include <sstream>
 #include <stdexcept>
 #include <zlib.h>
 
@@ -52,10 +51,7 @@ std::vector<uint8_t> zlib_decompress(const std::vector<uint8_t> &data) {
 std::string sha1_hex(const std::vector<uint8_t> &data) {
   unsigned char hash[SHA_DIGEST_LENGTH];
   SHA1(data.data(), data.size(), hash);
-  std::stringstream ss;
-  for (int i = 0; i < SHA_DIGEST_LENGTH; i++)
-    ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
-  return ss.str();
+  return bytes_to_hex(hash, SHA_DIGEST_LENGTH);
 }
 
 void FitCommit::deserialize(const std::vector<uint8_t> &data) {
@@ -124,11 +120,7 @@ void FitTree::deserialize(const std::vector<uint8_t> &data) {
       }
     }
     std::string path(data.begin() + x + 1, data.begin() + y);
-    std::stringstream ss;
-    for (size_t i = y + 1; i < y + 21 && i < data.size(); ++i) {
-      ss << std::hex << std::setw(2) << std::setfill('0') << (int)data[i];
-    }
-    items.push_back({mode, path, ss.str()});
+    items.push_back({mode, path, bytes_to_hex(&data[y + 1], 20)});
     pos = y + 21;
   }
 }
@@ -151,10 +143,8 @@ std::vector<uint8_t> FitTree::serialize() {
     ret.push_back(' ');
     ret.insert(ret.end(), item.path.begin(), item.path.end());
     ret.push_back('\0');
-    for (size_t i = 0; i < item.sha.size(); i += 2) {
-      uint8_t byte = std::stoul(item.sha.substr(i, 2), nullptr, 16);
+    for (auto byte : hex_to_bytes(item.sha))
       ret.push_back(byte);
-    }
   }
   return ret;
 }

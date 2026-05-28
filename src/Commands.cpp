@@ -350,7 +350,7 @@ void cmd_status() {
     } else {
       struct stat st;
       stat((repo.worktree / e.name).string().c_str(), &st);
-      if (static_cast<uint32_t>(st.st_mtime) != e.mtime.first) {
+      if (static_cast<uint32_t>(st.st_mtime) != e.mtime.sec) {
         std::cout << "\tmodified:   " << e.name << "\n";
       }
     }
