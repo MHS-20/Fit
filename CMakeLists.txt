@@ -13,9 +13,9 @@ find_package(CURL REQUIRED)
 find_path(INIH_INCLUDE_DIR NAMES ini.h)
 find_library(INIH_LIBRARY NAMES inih)
 
-# Build Target
-add_executable(fit
-    src/main.cpp
+# Build Targets: everything but the CLI entry point is a library, so tests
+# can link it without CLI11.
+add_library(fit_lib STATIC
     src/Commands.cpp
     src/Repository.cpp
     src/Objects.cpp
@@ -25,9 +25,11 @@ add_executable(fit
     src/Config.cpp
     src/Remote.cpp
 )
+target_include_directories(fit_lib PUBLIC ${INIH_INCLUDE_DIR})
+target_link_libraries(fit_lib PUBLIC OpenSSL::Crypto ZLIB::ZLIB CURL::libcurl ${INIH_LIBRARY})
 
-target_include_directories(fit PRIVATE ${INIH_INCLUDE_DIR})
-target_link_libraries(fit PRIVATE CLI11::CLI11 OpenSSL::Crypto ZLIB::ZLIB CURL::libcurl ${INIH_LIBRARY})
+add_executable(fit src/main.cpp)
+target_link_libraries(fit PRIVATE fit_lib CLI11::CLI11)
 
 # 1. Installation Feature
 include(GNUInstallDirs)

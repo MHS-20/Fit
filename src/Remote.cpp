@@ -101,14 +101,8 @@ std::vector<uint8_t> pkt_build_lines(const std::vector<std::string> &lines) {
   return ret;
 }
 
-std::string get_remote_master_hash(const std::string &git_url,
-                                   const std::string &username,
-                                   const std::string &password,
-                                   std::string &out_branch) {
-  std::vector<uint8_t> empty_data;
-  auto res = _http_raw(git_url + "/info/refs?service=git-receive-pack",
-                       username, password, empty_data, "");
-  auto lines = pkt_read_lines(res);
+std::string parse_ref_advertisement(const std::vector<std::string> &lines,
+                                    std::string &out_branch) {
   for (auto &line : lines) {
     if (line.empty() || line[0] == '#')
       continue;
@@ -214,6 +208,16 @@ std::vector<uint8_t> create_pack(const FitRepository &repo,
   SHA1(pack.data(), pack.size(), hash);
   pack.insert(pack.end(), hash, hash + SHA_DIGEST_LENGTH);
   return pack;
+}
+
+std::string get_remote_master_hash(const std::string &git_url,
+                                   const std::string &username,
+                                   const std::string &password,
+                                   std::string &out_branch) {
+  std::vector<uint8_t> empty_data;
+  auto res = _http_raw(git_url + "/info/refs?service=git-receive-pack",
+                       username, password, empty_data, "");
+  return parse_ref_advertisement(pkt_read_lines(res), out_branch);
 }
 
 void push(const FitRepository &repo, const std::string &git_url,

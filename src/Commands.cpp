@@ -38,17 +38,26 @@ void cmd_hash_object(const std::string &type, bool write,
   std::cout << sha << "\n";
 }
 
+std::vector<std::string> log_walk(const FitRepository &repo,
+                                  const std::string &start) {
+  std::vector<std::string> out;
+  std::string sha = object_find(repo, start, "commit");
+  while (!sha.empty()) {
+    auto c = std::dynamic_pointer_cast<FitCommit>(object_read(repo, sha));
+    out.push_back(sha);
+    sha = c->kvlm.count("parent") ? c->kvlm["parent"][0] : "";
+  }
+  return out;
+}
+
 void cmd_log(const std::string &commit) {
   auto repo = repo_find();
-  std::string sha = object_find(repo, commit, "commit");
-  while (!sha.empty()) {
-    auto obj = object_read(repo, sha);
-    auto c = std::dynamic_pointer_cast<FitCommit>(obj);
+  for (auto &sha : log_walk(repo, commit)) {
+    auto c = std::dynamic_pointer_cast<FitCommit>(object_read(repo, sha));
     std::cout << "commit " << sha << "\n";
     if (c->kvlm.count("author"))
       std::cout << "Author: " << c->kvlm["author"][0] << "\n";
     std::cout << "\n    " << (c->kvlm.count("") ? c->kvlm[""][0] : "") << "\n";
-    sha = c->kvlm.count("parent") ? c->kvlm["parent"][0] : "";
   }
 }
 
@@ -61,23 +70,19 @@ void cmd_ls_tree(bool recursive, const std::string &tree) {
   }
 }
 
-void cmd_checkout(const std::string &commit, const std::string &path) {
-  auto repo = repo_find();
-  fs::path dest(path);
+void checkout_tree(const FitRepository &repo, const std::string &tree_sha,
+                   const fs::path &dest) {
   if (fs::exists(dest) && !fs::is_empty(dest))
     throw std::runtime_error("Directory not empty");
-  std::string sha = object_find(repo, commit, "commit");
-  auto c = std::dynamic_pointer_cast<FitCommit>(object_read(repo, sha));
-  std::string tree_sha = c->kvlm["tree"][0];
 
-  std::function<void(const std::string &, const fs::path &)> checkout_tree;
-  checkout_tree = [&](const std::string &t_sha, const fs::path &base) {
+  std::function<void(const std::string &, const fs::path &)> walk;
+  walk = [&](const std::string &t_sha, const fs::path &base) {
     auto t = std::dynamic_pointer_cast<FitTree>(object_read(repo, t_sha));
     for (auto &item : t->items) {
       fs::path target = base / item.path;
       if (item.mode.rfind("04", 0) == 0) { // tree
         fs::create_directories(target);
-        checkout_tree(item.sha, target);
+        walk(item.sha, target);
       } else {
         auto b =
             std::dynamic_pointer_cast<FitBlob>(object_read(repo, item.sha));
@@ -88,7 +93,14 @@ void cmd_checkout(const std::string &commit, const std::string &path) {
     }
   };
 
-  checkout_tree(tree_sha, dest);
+  walk(tree_sha, dest);
+}
+
+void cmd_checkout(const std::string &commit, const std::string &path) {
+  auto repo = repo_find();
+  std::string sha = object_find(repo, commit, "commit");
+  auto c = std::dynamic_pointer_cast<FitCommit>(object_read(repo, sha));
+  checkout_tree(repo, c->kvlm["tree"][0], path);
 }
 
 void show_ref_internal(const RefMap &refs, bool with_hash,
@@ -219,9 +231,9 @@ void cmd_add(const std::vector<std::string> &paths, bool all) {
   index_write(repo, idx);
 }
 
-static std::string build_tree(const FitRepository &repo,
-                              const std::vector<FitIndexEntry> &entries,
-                              const std::string &prefix) {
+std::string write_tree_from_entries(const FitRepository &repo,
+                                    const std::vector<FitIndexEntry> &entries,
+                                    const std::string &prefix) {
   FitTree tree;
   std::map<std::string, std::vector<FitIndexEntry>> subdirs;
 
@@ -246,28 +258,25 @@ static std::string build_tree(const FitRepository &repo,
   // recursively build subtrees
   for (auto &[subdir, sub_entries] : subdirs) {
     std::string sub_prefix = prefix.empty() ? subdir : prefix + "/" + subdir;
-    std::string sub_sha = build_tree(repo, sub_entries, sub_prefix);
+    std::string sub_sha =
+        write_tree_from_entries(repo, sub_entries, sub_prefix);
     tree.items.push_back({"040000", subdir, sub_sha});
   }
 
   return object_write(tree, repo);
 }
 
-void cmd_commit(const std::string &message) {
-  auto repo = repo_find();
+std::string cmd_commit(const FitRepository &repo, const std::string &message,
+                       const std::string &identity) {
   FitIndex idx = index_read(repo);
 
-  std::string tree_sha = build_tree(repo, idx.entries, "");
+  std::string tree_sha = write_tree_from_entries(repo, idx.entries, "");
 
   FitCommit commit;
   commit.kvlm["tree"].push_back(tree_sha);
   std::string parent = ref_resolve(repo, "HEAD");
   if (!parent.empty())
     commit.kvlm["parent"].push_back(parent);
-  std::string identity = fitconfig_user_get(fitconfig_read());
-  if (identity.empty())
-    throw std::runtime_error(
-        "User identity not configured in configuration context.");
   commit.kvlm["author"].push_back(identity);
   commit.kvlm["committer"].push_back(identity);
   commit.kvlm[""].push_back(message + "\n");
@@ -285,7 +294,86 @@ void cmd_commit(const std::string &message) {
     std::ofstream h(repo_file(repo, "HEAD"));
     h << commit_sha << "\n";
   }
-  std::cout << "commit " << commit_sha << "\n";
+  return commit_sha;
+}
+
+void cmd_commit(const std::string &message) {
+  auto repo = repo_find();
+  std::string identity = fitconfig_user_get(fitconfig_read());
+  if (identity.empty())
+    throw std::runtime_error(
+        "User identity not configured in configuration context.");
+  std::cout << "commit " << cmd_commit(repo, message, identity) << "\n";
+}
+
+std::map<std::string, std::string> flatten_tree(const FitRepository &repo,
+                                                const std::string &tree_sha) {
+  std::map<std::string, std::string> out;
+  std::function<void(const std::string &, const std::string &)> walk_tree;
+  walk_tree = [&](const std::string &sha, const std::string &prefix) {
+    auto obj = std::dynamic_pointer_cast<FitTree>(object_read(repo, sha));
+    if (!obj)
+      return;
+    for (auto &item : obj->items) {
+      std::string full = prefix.empty() ? item.path : prefix + "/" + item.path;
+      if (item.mode.rfind("04", 0) == 0) {
+        walk_tree(item.sha, full);
+      } else {
+        out[full] = item.sha;
+      }
+    }
+  };
+  walk_tree(tree_sha, "");
+  return out;
+}
+
+StatusReport compute_status(const FitRepository &repo) {
+  StatusReport report;
+  FitIndex idx = index_read(repo);
+
+  // Build a map of path -> sha from the HEAD commit tree
+  std::map<std::string, std::string> head_tree;
+  std::string head_sha = ref_resolve(repo, "HEAD");
+  if (!head_sha.empty()) {
+    auto head_commit =
+        std::dynamic_pointer_cast<FitCommit>(object_read(repo, head_sha));
+    if (head_commit && head_commit->kvlm.count("tree"))
+      head_tree = flatten_tree(repo, head_commit->kvlm["tree"][0]);
+  }
+
+  // Changes to be committed: compare index vs HEAD
+  for (auto &e : idx.entries) {
+    if (head_tree.count(e.name) == 0) {
+      report.staged_new.push_back(e.name);
+    } else if (head_tree[e.name] != e.sha) {
+      report.staged_modified.push_back(e.name);
+    }
+  }
+  // Files in HEAD but not in index = deleted
+  for (auto &[path, sha] : head_tree) {
+    bool in_index = false;
+    for (auto &e : idx.entries)
+      if (e.name == path) {
+        in_index = true;
+        break;
+      }
+    if (!in_index)
+      report.staged_deleted.push_back(path);
+  }
+
+  // Changes not staged: compare working tree vs index
+  for (auto &e : idx.entries) {
+    if (!fs::exists(repo.worktree / e.name)) {
+      report.unstaged_deleted.push_back(e.name);
+    } else {
+      struct stat st;
+      stat((repo.worktree / e.name).string().c_str(), &st);
+      if (static_cast<uint32_t>(st.st_mtime) != e.mtime.sec) {
+        report.unstaged_modified.push_back(e.name);
+      }
+    }
+  }
+  return report;
 }
 
 void cmd_status() {
@@ -305,68 +393,20 @@ void cmd_status() {
     branch_name.erase(branch_name.find_last_not_of(" \t\r\n") + 1);
   }
 
-  // Build a map of path -> sha from the HEAD commit tree
-  std::map<std::string, std::string> head_tree;
-  std::string head_sha = ref_resolve(repo, "HEAD");
-  if (!head_sha.empty()) {
-    auto head_obj = object_read(repo, head_sha);
-    auto head_commit = std::dynamic_pointer_cast<FitCommit>(head_obj);
-    if (head_commit && head_commit->kvlm.count("tree")) {
-      std::string tree_sha = head_commit->kvlm["tree"][0];
-      // Flatten the tree recursively into path->sha map
-      std::function<void(const std::string &, const std::string &)> walk_tree;
-      walk_tree = [&](const std::string &sha, const std::string &prefix) {
-        auto obj = std::dynamic_pointer_cast<FitTree>(object_read(repo, sha));
-        if (!obj)
-          return;
-        for (auto &item : obj->items) {
-          std::string full =
-              prefix.empty() ? item.path : prefix + "/" + item.path;
-          if (item.mode.rfind("04", 0) == 0) {
-            walk_tree(item.sha, full);
-          } else {
-            head_tree[full] = item.sha;
-          }
-        }
-      };
-      walk_tree(tree_sha, "");
-    }
-  }
-
-  // Changes to be committed: compare index vs HEAD
+  StatusReport report = compute_status(repo);
   std::cout << "On branch " << branch_name << "\n\nChanges to be committed:\n";
-  for (auto &e : idx.entries) {
-    if (head_tree.count(e.name) == 0) {
-      std::cout << "\tnew file:   " << e.name << "\n";
-    } else if (head_tree[e.name] != e.sha) {
-      std::cout << "\tmodified:   " << e.name << "\n";
-    }
-  }
-  // Files in HEAD but not in index = deleted
-  for (auto &[path, sha] : head_tree) {
-    bool in_index = false;
-    for (auto &e : idx.entries)
-      if (e.name == path) {
-        in_index = true;
-        break;
-      }
-    if (!in_index)
-      std::cout << "\tdeleted:    " << path << "\n";
-  }
+  for (auto &p : report.staged_new)
+    std::cout << "\tnew file:   " << p << "\n";
+  for (auto &p : report.staged_modified)
+    std::cout << "\tmodified:   " << p << "\n";
+  for (auto &p : report.staged_deleted)
+    std::cout << "\tdeleted:    " << p << "\n";
 
-  // Changes not staged: compare working tree vs index
   std::cout << "\nChanges not staged for commit:\n";
-  for (auto &e : idx.entries) {
-    if (!fs::exists(repo.worktree / e.name)) {
-      std::cout << "\tdeleted:    " << e.name << "\n";
-    } else {
-      struct stat st;
-      stat((repo.worktree / e.name).string().c_str(), &st);
-      if (static_cast<uint32_t>(st.st_mtime) != e.mtime.sec) {
-        std::cout << "\tmodified:   " << e.name << "\n";
-      }
-    }
-  }
+  for (auto &p : report.unstaged_deleted)
+    std::cout << "\tdeleted:    " << p << "\n";
+  for (auto &p : report.unstaged_modified)
+    std::cout << "\tmodified:   " << p << "\n";
 
   // Untracked files
   std::cout << "\nUntracked files:\n";
@@ -388,6 +428,27 @@ void cmd_status() {
     }
   }
 }
+std::vector<DiffLine> diff_lines(const std::vector<std::string> &old_lines,
+                                 const std::vector<std::string> &new_lines) {
+  std::vector<DiffLine> out;
+  size_t i = 0, j = 0;
+  while (i < old_lines.size() || j < new_lines.size()) {
+    if (i < old_lines.size() && j < new_lines.size() &&
+        old_lines[i] == new_lines[j]) {
+      out.push_back({' ', old_lines[i]});
+      ++i;
+      ++j;
+    } else if (i < old_lines.size()) {
+      out.push_back({'-', old_lines[i]});
+      ++i;
+    } else {
+      out.push_back({'+', new_lines[j]});
+      ++j;
+    }
+  }
+  return out;
+}
+
 void cmd_diff() {
   auto repo = repo_find();
   FitIndex idx = index_read(repo);
@@ -429,21 +490,8 @@ void cmd_diff() {
     auto old_lines = split_lines(old_text);
     auto new_lines = split_lines(new_text);
 
-    size_t i = 0, j = 0;
-    while (i < old_lines.size() || j < new_lines.size()) {
-      if (i < old_lines.size() && j < new_lines.size() &&
-          old_lines[i] == new_lines[j]) {
-        std::cout << " " << old_lines[i] << "\n";
-        ++i;
-        ++j;
-      } else if (i < old_lines.size()) {
-        std::cout << "-" << old_lines[i] << "\n";
-        ++i;
-      } else {
-        std::cout << "+" << new_lines[j] << "\n";
-        ++j;
-      }
-    }
+    for (auto &l : diff_lines(old_lines, new_lines))
+      std::cout << l.tag << l.text << "\n";
   }
 }
 
