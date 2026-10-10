@@ -31,6 +31,24 @@ target_link_libraries(fit_lib PUBLIC OpenSSL::Crypto ZLIB::ZLIB CURL::libcurl ${
 add_executable(fit src/main.cpp)
 target_link_libraries(fit PRIVATE fit_lib CLI11::CLI11)
 
+# Tests: one CTest entry per TEST(name), run as `fit_tests <name>`. Most
+# cross-check against the real `git` binary, which must be on PATH.
+file(GLOB FIT_TEST_SOURCES tests/*_tests.cpp)
+add_executable(fit_tests tests/main.cpp ${FIT_TEST_SOURCES})
+target_link_libraries(fit_tests PRIVATE fit_lib)
+target_compile_definitions(fit_tests PRIVATE
+    FIT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+
+enable_testing()
+foreach(test_source ${FIT_TEST_SOURCES})
+    file(STRINGS ${test_source} test_lines REGEX "^TEST\\(")
+    foreach(test_line ${test_lines})
+        string(REGEX REPLACE "^TEST\\(([a-z0-9_]+)\\).*" "\\1" test_name "${test_line}")
+        add_test(NAME ${test_name} COMMAND fit_tests ${test_name})
+        set_tests_properties(${test_name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
+    endforeach()
+endforeach()
+
 # 1. Installation Feature
 include(GNUInstallDirs)
 install(TARGETS fit DESTINATION ${CMAKE_INSTALL_BINDIR})

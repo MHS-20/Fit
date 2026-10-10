@@ -28,6 +28,14 @@ An implementation of a version control system, built from scratch. `fit` is heav
 
 It is provided a quality-of-life wrapper `Makefile` at the repository root to simplify daily workspace workflow. Ensure your environment variable `$VCPKG_ROOT` is configured in your shell environment before initializing the compilation sequence.
 
+### Tests
+
+```bash
+make test
+```
+
+Runs the suite in `tests/` through CTest, one entry per `TEST(name)`. Most tests build something with fit and ask the real `git` binary (which must be on `PATH`) whether it agrees: `git fsck`, `git log`, `git write-tree`, `git index-pack` and so on. `remote_live_push_to_github` pushes to GitHub and is skipped unless `FIT_TEST_GITHUB_TOKEN` and `FIT_TEST_GITHUB_REPO=<user>/<empty-repo>` are set.
+
 ### Installation
 
 Install the binary executable system-wide (installs to `/usr/local/bin` by default):
