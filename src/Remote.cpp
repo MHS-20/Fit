@@ -5,16 +5,15 @@
 #include <curl/curl.h>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <openssl/sha.h>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <zlib.h>
 
-extern std::vector<uint8_t> zlib_compress(const std::vector<uint8_t> &data);
-
-size_t WriteCallbackRaw(void *contents, size_t size, size_t nmemb,
-                        void *userp) {
+static size_t WriteCallbackRaw(void *contents, size_t size, size_t nmemb,
+                               void *userp) {
   size_t realsize = size * nmemb;
   std::vector<uint8_t> *mem = static_cast<std::vector<uint8_t> *>(userp);
   mem->insert(mem->end(), static_cast<uint8_t *>(contents),
@@ -22,144 +21,166 @@ size_t WriteCallbackRaw(void *contents, size_t size, size_t nmemb,
   return realsize;
 }
 
-std::vector<uint8_t> _http_raw(const std::string &url,
-                               const std::string &username,
-                               const std::string &password,
-                               const std::vector<uint8_t> &data,
-                               const std::string &content_type) {
-  CURL *curl = curl_easy_init();
+static std::vector<uint8_t> _http_raw(const std::string &url,
+                                      const std::string &username,
+                                      const std::string &password,
+                                      const std::vector<uint8_t> &data,
+                                      const std::string &content_type) {
+  std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> curl(curl_easy_init(),
+                                                           curl_easy_cleanup);
+  if (!curl)
+    throw std::runtime_error("Could not initialize libcurl");
+  std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> headers(
+      nullptr, curl_slist_free_all);
+  auto add_header = [&](const std::string &h) {
+    curl_slist *grown = curl_slist_append(headers.get(), h.c_str());
+    if (!grown)
+      throw std::runtime_error("Could not build HTTP headers");
+    headers.release();
+    headers.reset(grown);
+  };
   std::vector<uint8_t> response;
-  if (curl) {
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    if (!username.empty())
-      curl_easy_setopt(curl, CURLOPT_USERNAME, username.c_str());
-    if (!password.empty())
-      curl_easy_setopt(curl, CURLOPT_PASSWORD, password.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallbackRaw);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    struct curl_slist *headers = NULL;
-    if (!content_type.empty()) {
-      headers =
-          curl_slist_append(headers, ("Content-Type: " + content_type).c_str());
-      headers = curl_slist_append(headers, "User-Agent: git/fit");
-    }
-    if (!data.empty()) {
-      curl_easy_setopt(curl, CURLOPT_POSTFIELDS,
-                       reinterpret_cast<const char *>(data.data()));
-      curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, data.size());
-    } else if (!content_type.empty()) {
-      curl_easy_setopt(curl, CURLOPT_POST, 1L);
-      curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, 0L);
-    }
-    if (headers)
-      curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-      curl_easy_cleanup(curl);
-      throw std::runtime_error("CURL request failed");
-    }
-    curl_easy_cleanup(curl);
-    if (headers)
-      curl_slist_free_all(headers);
+
+  curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
+  if (!username.empty())
+    curl_easy_setopt(curl.get(), CURLOPT_USERNAME, username.c_str());
+  if (!password.empty())
+    curl_easy_setopt(curl.get(), CURLOPT_PASSWORD, password.c_str());
+  curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION, WriteCallbackRaw);
+  curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &response);
+  add_header("User-Agent: git/fit");
+  if (!content_type.empty()) {
+    add_header("Content-Type: " + content_type);
+    curl_easy_setopt(curl.get(), CURLOPT_POST, 1L);
+    curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS,
+                     reinterpret_cast<const char *>(data.data()));
+    curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE_LARGE,
+                     static_cast<curl_off_t>(data.size()));
   }
+  curl_easy_setopt(curl.get(), CURLOPT_HTTPHEADER, headers.get());
+
+  CURLcode res = curl_easy_perform(curl.get());
+  if (res != CURLE_OK)
+    throw std::runtime_error(std::string("HTTP request failed: ") +
+                             curl_easy_strerror(res));
+  long status = 0;
+  curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
+  if (status >= 400)
+    throw std::runtime_error(
+        "HTTP " + std::to_string(status) + " from " + url +
+        (status == 401 || status == 403 ? " (check username and token)" : ""));
   return response;
 }
 
-std::vector<std::string> pkt_read_lines(const std::vector<uint8_t> &data) {
-  std::vector<std::string> lines;
+std::vector<PktLine> pkt_read_lines(const std::vector<uint8_t> &data) {
+  std::vector<PktLine> lines;
   size_t i = 0;
   while (i < data.size()) {
-    if (i + 4 > data.size())
-      break;
+    if (data.size() - i < 4)
+      throw std::runtime_error("Truncated pkt-line length");
     std::string raw_len(data.begin() + i, data.begin() + i + 4);
-    int line_len = std::stoul(raw_len, nullptr, 16);
+    if (raw_len.find_first_not_of("0123456789abcdefABCDEF") !=
+        std::string::npos)
+      throw std::runtime_error("Bad pkt-line length '" + raw_len + "'");
+    size_t line_len = std::stoul(raw_len, nullptr, 16);
     if (line_len == 0) {
-      lines.push_back("");
+      lines.push_back(std::nullopt);
       i += 4;
-    } else {
-      lines.push_back(
-          std::string(data.begin() + i + 4, data.begin() + i + line_len));
-      i += line_len;
+      continue;
     }
+    if (line_len < 4) // 0001-0003: protocol v2 delimiters, not spoken here
+      throw std::runtime_error("Unsupported pkt-line " + raw_len);
+    if (line_len > data.size() - i)
+      throw std::runtime_error("Truncated pkt-line");
+    lines.emplace_back(
+        std::string(data.begin() + i + 4, data.begin() + i + line_len));
+    i += line_len;
   }
   return lines;
 }
 
-std::vector<uint8_t> pkt_build_lines(const std::vector<std::string> &lines) {
+static constexpr size_t kMaxPktPayload = 65516; // 65520 minus the length
+
+std::vector<uint8_t> pkt_build_lines(const std::vector<PktLine> &lines) {
   std::vector<uint8_t> ret;
   for (auto &line : lines) {
-    if (line.empty()) {
+    if (!line) {
       ret.insert(ret.end(), {'0', '0', '0', '0'});
-    } else {
-      std::stringstream ss;
-      ss << std::setw(4) << std::setfill('0') << std::hex << (line.size() + 4);
-      std::string hdr = ss.str();
-      ret.insert(ret.end(), hdr.begin(), hdr.end());
-      ret.insert(ret.end(), line.begin(), line.end());
+      continue;
     }
+    if (line->size() > kMaxPktPayload)
+      throw std::runtime_error("pkt-line too long");
+    std::stringstream ss;
+    ss << std::setw(4) << std::setfill('0') << std::hex << (line->size() + 4);
+    std::string hdr = ss.str();
+    ret.insert(ret.end(), hdr.begin(), hdr.end());
+    ret.insert(ret.end(), line->begin(), line->end());
   }
   return ret;
 }
 
-std::string parse_ref_advertisement(const std::vector<std::string> &lines,
-                                    std::string &out_branch) {
+std::string parse_ref_advertisement(const std::vector<PktLine> &lines,
+                                    const std::string &ref) {
   for (auto &line : lines) {
-    if (line.empty() || line[0] == '#')
+    if (!line || line->empty() || (*line)[0] == '#')
       continue;
-    size_t spc = line.find(' ');
+    size_t spc = line->find(' ');
     if (spc == std::string::npos)
       continue;
-    std::string sha = line.substr(0, spc);
-    size_t null_or_nl = line.find_first_of("\n\0", spc + 1);
-    std::string ref = line.substr(spc + 1, null_or_nl - spc - 1);
-    if (ref == "refs/heads/master") {
-      out_branch = "master";
-      return sha;
-    }
-    if (ref == "refs/heads/main") {
-      out_branch = "main";
-      return sha;
-    }
+    // The first ref line carries "\0<capabilities>" after the name; the
+    // two-character length makes find_first_of look for the NUL too.
+    size_t end = line->find_first_of(std::string("\n\0", 2), spc + 1);
+    if (line->substr(spc + 1, end - spc - 1) == ref)
+      return line->substr(0, spc);
   }
-  out_branch = "master";
   return "";
 }
 
+std::string get_remote_ref_hash(const std::string &git_url,
+                                const std::string &username,
+                                const std::string &password,
+                                const std::string &ref) {
+  auto res = _http_raw(git_url + "/info/refs?service=git-receive-pack",
+                       username, password, {}, "");
+  return parse_ref_advertisement(pkt_read_lines(res), ref);
+}
+
 void collect_objects(const FitRepository &repo, const std::string &sha,
-                     std::set<std::string> &objs) {
-  if (sha.empty() || objs.count(sha))
-    return;
-  auto obj = object_read(repo, sha);
-  if (!obj)
-    return;
-  objs.insert(sha);
-  if (obj->get_fmt() == "commit") {
-    auto c = std::dynamic_pointer_cast<FitCommit>(obj);
-    if (c->kvlm.count("tree"))
-      collect_objects(repo, c->kvlm["tree"][0], objs);
-    if (c->kvlm.count("parent")) {
-      for (auto &p : c->kvlm["parent"])
-        collect_objects(repo, p, objs);
+                     std::set<std::string> &objs,
+                     const std::set<std::string> *known) {
+  // Iterative, so a long history can't overflow the call stack.
+  std::vector<std::string> todo = {sha};
+  while (!todo.empty()) {
+    std::string cur = std::move(todo.back());
+    todo.pop_back();
+    if (cur.empty() || objs.count(cur) || (known && known->count(cur)))
+      continue;
+    auto obj = object_read(repo, cur);
+    if (!obj)
+      throw std::runtime_error("Missing object " + cur);
+    objs.insert(cur);
+    if (auto c = std::dynamic_pointer_cast<FitCommit>(obj)) {
+      for (const char *key : {"tree", "parent", "object"})
+        if (c->kvlm.count(key))
+          for (auto &next : c->kvlm[key])
+            todo.push_back(next);
+    } else if (auto t = std::dynamic_pointer_cast<FitTree>(obj)) {
+      for (auto &item : t->items)
+        if (item.mode != "160000") // submodule commit lives in another repo
+          todo.push_back(item.sha);
     }
-  } else if (obj->get_fmt() == "tree") {
-    auto t = std::dynamic_pointer_cast<FitTree>(obj);
-    for (auto &item : t->items)
-      collect_objects(repo, item.sha, objs);
   }
 }
 
 std::vector<std::string> find_missing_objects(const FitRepository &repo,
                                               const std::string &local,
                                               const std::string &remote) {
-  std::set<std::string> local_objs, remote_objs;
-  collect_objects(repo, local, local_objs);
+  std::set<std::string> remote_objs, missing;
   collect_objects(repo, remote, remote_objs);
-  std::vector<std::string> missing;
-  for (auto &o : local_objs) {
-    if (!remote_objs.count(o))
-      missing.push_back(o);
-  }
-  return missing;
+  // Anything the remote has, it has with its whole history, so the local
+  // walk stops there.
+  collect_objects(repo, local, missing, &remote_objs);
+  return {missing.begin(), missing.end()};
 }
 
 std::vector<uint8_t> encode_pack_object_header(PackObjectType type,
@@ -189,6 +210,8 @@ std::vector<uint8_t> create_pack(const FitRepository &repo,
               reinterpret_cast<uint8_t *>(&count) + 4);
   for (auto &sha : objects) {
     auto obj = object_read(repo, sha);
+    if (!obj)
+      throw std::runtime_error("Missing object " + sha);
     PackObjectType t;
     if (obj->get_fmt() == "commit")
       t = PackObjectType::commit;
@@ -196,8 +219,10 @@ std::vector<uint8_t> create_pack(const FitRepository &repo,
       t = PackObjectType::tree;
     else if (obj->get_fmt() == "blob")
       t = PackObjectType::blob;
-    else
+    else if (obj->get_fmt() == "tag")
       t = PackObjectType::tag;
+    else
+      throw std::runtime_error("Cannot pack object type " + obj->get_fmt());
     std::vector<uint8_t> raw = obj->serialize();
     std::vector<uint8_t> header = encode_pack_object_header(t, raw.size());
     pack.insert(pack.end(), header.begin(), header.end());
@@ -210,47 +235,59 @@ std::vector<uint8_t> create_pack(const FitRepository &repo,
   return pack;
 }
 
-std::string get_remote_master_hash(const std::string &git_url,
-                                   const std::string &username,
-                                   const std::string &password,
-                                   std::string &out_branch) {
-  std::vector<uint8_t> empty_data;
-  auto res = _http_raw(git_url + "/info/refs?service=git-receive-pack",
-                       username, password, empty_data, "");
-  return parse_ref_advertisement(pkt_read_lines(res), out_branch);
-}
-
 void push(const FitRepository &repo, const std::string &git_url,
           const std::string &username, const std::string &password) {
-  std::string local_sha = ref_resolve(repo, "refs/heads/master");
-  if (local_sha.empty())
-    local_sha = ref_resolve(repo, "refs/heads/main");
+  std::string ref = ref_head_target(repo);
+  if (ref.empty())
+    throw std::runtime_error("HEAD is detached; switch to a branch to push.");
+  std::string local_sha = ref_resolve(repo, ref);
   if (local_sha.empty())
     throw std::runtime_error("Nothing to push.");
   std::cout << "Fetching remote state from " << git_url << "...\n";
-  std::string branch;
   std::string remote_sha =
-      get_remote_master_hash(git_url, username, password, branch);
+      get_remote_ref_hash(git_url, username, password, ref);
   if (remote_sha == local_sha) {
     std::cout << "Already up to date.\n";
     return;
   }
+  if (!remote_sha.empty() && !object_read(repo, remote_sha))
+    throw std::runtime_error("Rejected: " + ref +
+                             " on the remote has commits that are not present "
+                             "locally (fetch is not supported).");
   std::cout << "Local  : " << local_sha
             << "\nRemote : " << (remote_sha.empty() ? "(empty)" : remote_sha)
             << "\n";
   auto missing = find_missing_objects(repo, local_sha, remote_sha);
   std::cout << "Packing " << missing.size() << " object(s) ...\n";
   std::string old_sha = remote_sha.empty() ? std::string(40, '0') : remote_sha;
-  std::string ref_line = old_sha + " " + local_sha + " refs/heads/" + branch +
-                         '\0' + " report-status\n";
-  std::vector<uint8_t> body = pkt_build_lines({ref_line});
-  body.insert(body.end(), {'0', '0', '0', '0'});
+  // Capabilities share the first command line, after a NUL.
+  std::string ref_line =
+      old_sha + " " + local_sha + " " + ref + '\0' + " report-status\n";
+  std::vector<uint8_t> body = pkt_build_lines({ref_line, std::nullopt});
   std::vector<uint8_t> pack = create_pack(repo, missing);
   body.insert(body.end(), pack.begin(), pack.end());
   std::cout << "Pushing ...\n";
   auto res = _http_raw(git_url + "/git-receive-pack", username, password, body,
                        "application/x-git-receive-pack-request");
-  auto status_lines = pkt_read_lines(res);
-  for (auto &l : status_lines)
+
+  // report-status: "unpack ok", then "ok <ref>" or "ng <ref> <reason>".
+  bool unpack_ok = false, ref_ok = false;
+  std::string failure;
+  for (auto &line : pkt_read_lines(res)) {
+    if (!line)
+      continue;
+    std::string l = *line;
+    if (!l.empty() && l.back() == '\n')
+      l.pop_back();
     std::cout << l << "\n";
+    if (l == "unpack ok")
+      unpack_ok = true;
+    else if (l.rfind("unpack ", 0) == 0 || l.rfind("ng " + ref + " ", 0) == 0)
+      failure = l;
+    else if (l == "ok " + ref)
+      ref_ok = true;
+  }
+  if (!unpack_ok || !ref_ok)
+    throw std::runtime_error("Push rejected: " +
+                             (failure.empty() ? "no status report" : failure));
 }

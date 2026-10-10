@@ -18,6 +18,10 @@ int main(int argc, char **argv) {
   std::string co_commit, co_path;
   bool tag_obj_flag = false;
   std::vector<std::string> tag_args;
+  std::string tag_msg;
+  std::string rev_type, rev_name;
+  bool ls_files_verbose = false;
+  std::vector<std::string> ignore_paths;
   std::vector<std::string> rm_paths;
   bool add_all = false;
   std::vector<std::string> add_paths;
@@ -54,7 +58,19 @@ int main(int argc, char **argv) {
 
   auto *tag_cmd = app.add_subcommand("tag", "Handle tagging operations");
   tag_cmd->add_flag("-a", tag_obj_flag);
+  tag_cmd->add_option("-m", tag_msg, "Message for an annotated tag");
   tag_cmd->add_option("args", tag_args);
+
+  auto *rev_cmd = app.add_subcommand("rev-parse", "Resolve a name to a SHA");
+  rev_cmd->add_option("--fit-type", rev_type);
+  rev_cmd->add_option("name", rev_name)->required();
+
+  auto *ls_files_cmd = app.add_subcommand("ls-files", "List staged files");
+  ls_files_cmd->add_flag("--verbose", ls_files_verbose);
+
+  auto *ignore_cmd =
+      app.add_subcommand("check-ignore", "Test paths against ignore rules");
+  ignore_cmd->add_option("paths", ignore_paths)->required();
 
   auto *rm_cmd = app.add_subcommand("rm", "Remove paths");
   rm_cmd->add_option("paths", rm_paths)->required();
@@ -99,7 +115,10 @@ int main(int argc, char **argv) {
       {ls_cmd, [&] { cmd_ls_tree(ls_recurse, ls_tree_obj); }},
       {checkout_cmd, [&] { cmd_checkout(co_commit, co_path); }},
       {show_ref_cmd, [&] { cmd_show_ref(); }},
-      {tag_cmd, [&] { cmd_tag(tag_obj_flag, tag_args); }},
+      {tag_cmd, [&] { cmd_tag(tag_obj_flag, tag_args, tag_msg); }},
+      {rev_cmd, [&] { cmd_rev_parse(rev_type, rev_name); }},
+      {ls_files_cmd, [&] { cmd_ls_files(ls_files_verbose); }},
+      {ignore_cmd, [&] { cmd_check_ignore(ignore_paths); }},
       {rm_cmd, [&] { cmd_rm(rm_paths); }},
       {add_cmd, [&] { cmd_add(add_paths, add_all); }},
       {commit_cmd, [&] { cmd_commit(commit_msg); }},

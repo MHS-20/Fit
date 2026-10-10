@@ -1,9 +1,12 @@
 #pragma once
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Convert a byte buffer to a lowercase hex string
@@ -29,4 +32,26 @@ inline std::vector<uint8_t> hex_to_bytes(const std::string &hex) {
     out.push_back(
         static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
   return out;
+}
+
+// Writes `data` to a sibling ".lock" file, then renames it over `path`, so a
+// reader (or a crash mid-write) never sees a partially written file.
+inline void write_file_atomic(const std::filesystem::path &path,
+                              std::string_view data) {
+  std::filesystem::path tmp = path;
+  tmp += ".lock";
+  {
+    std::ofstream f(tmp, std::ios::binary);
+    f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!f)
+      throw std::runtime_error("Cannot write " + tmp.string());
+  }
+  std::filesystem::rename(tmp, path);
+}
+
+inline void write_file_atomic(const std::filesystem::path &path,
+                              const std::vector<uint8_t> &data) {
+  write_file_atomic(
+      path, std::string_view(reinterpret_cast<const char *>(data.data()),
+                             data.size()));
 }

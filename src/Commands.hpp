@@ -14,8 +14,9 @@ std::string write_tree_from_entries(const FitRepository &repo,
                                     const std::vector<FitIndexEntry> &entries,
                                     const std::string &prefix);
 
-// Commits the index with `identity` as author and committer, moves HEAD's
-// branch (or a detached HEAD) to the new commit, and returns its SHA.
+// Commits the index with `identity` ("Name <email> <unix-ts> <+hhmm>") as
+// author and committer, moves HEAD's branch (or a detached HEAD) to the new
+// commit, and returns its SHA. Throws if the tree equals the parent's.
 std::string cmd_commit(const FitRepository &repo, const std::string &message,
                        const std::string &identity);
 
@@ -42,7 +43,13 @@ struct DiffLine {
 std::vector<DiffLine> diff_lines(const std::vector<std::string> &old_lines,
                                  const std::vector<std::string> &new_lines);
 
-// Writes the tree `tree_sha` under `dest`, which must be empty or missing.
+// Lines of `text`; a last line without a trailing newline carries git's
+// "\ No newline at end of file" marker, so a change to only the final
+// newline still shows up as a difference.
+std::vector<std::string> split_diff_lines(const std::string &text);
+
+// Writes the tree `tree_sha` under `dest`, which must be empty or missing;
+// restores executable bits and symlinks.
 void checkout_tree(const FitRepository &repo, const std::string &tree_sha,
                    const fs::path &dest);
 
@@ -54,7 +61,8 @@ void cmd_log(const std::string &commit);
 void cmd_ls_tree(bool recursive, const std::string &tree);
 void cmd_checkout(const std::string &commit, const std::string &path);
 void cmd_show_ref();
-void cmd_tag(bool create_tag_object, const std::vector<std::string> &args);
+void cmd_tag(bool create_tag_object, const std::vector<std::string> &args,
+             const std::string &message);
 void cmd_rm(const std::vector<std::string> &paths);
 void cmd_add(const std::vector<std::string> &paths, bool all = false);
 void cmd_commit(const std::string &message);
@@ -66,3 +74,6 @@ void cmd_config(bool global_flag, const std::string &key,
                 const std::string &value);
 void cmd_push(const std::string &remote_url, const std::string &username,
               const std::string &password);
+void cmd_rev_parse(const std::string &type, const std::string &name);
+void cmd_ls_files(bool verbose);
+void cmd_check_ignore(const std::vector<std::string> &paths);

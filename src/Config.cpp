@@ -34,7 +34,16 @@ static int fit_ini_handler(void *user, const char *section, const char *name,
 }
 
 void parse_ini_file(const fs::path &path, ConfigMap &out) {
-  ini_parse(path.string().c_str(), fit_ini_handler, &out);
+  // inih treats an indented line as a continuation of the previous value, but
+  // git-style configs (including the ones fitconfig_set writes) indent every
+  // key; so leading whitespace is stripped before parsing.
+  std::ifstream f(path);
+  std::string text, line;
+  while (std::getline(f, line)) {
+    size_t first = line.find_first_not_of(" \t");
+    text += (first == std::string::npos ? "" : line.substr(first)) + "\n";
+  }
+  ini_parse_string_length(text.c_str(), text.size(), fit_ini_handler, &out);
 }
 
 ConfigMap parse_ini_file(const fs::path &path) {

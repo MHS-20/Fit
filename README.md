@@ -1,6 +1,6 @@
 # Fit
 
-An implementation of a version control system, built from scratch. `fit` is heavily inspired by git, and uses the same objects types and organization, however the byte format is not strictly the same, therefore git and fit cannot be swapped seamlessly.
+An implementation of a version control system, built from scratch. `fit` is heavily inspired by git and writes git's on-disk formats byte for byte: loose objects, trees, commits, tags, the index (version 2, with its trailing checksum) and packfiles. Exposing a `.fit` directory as `.git` lets real `git log`, `git fsck` or `git status` read it, and the test suite checks exactly that.
 
 <p align="center">
 <img src="fit.png" alt="Logo" width="300"/>
@@ -71,7 +71,7 @@ fit add <path> [path ...]
 
 ```
 
-Hashes each file as a blob, writes it to the object store, and updates the binary index registry. Re-adding an already-tracked file replaces its index entry.
+Hashes each file as a blob, writes it to the object store, and updates the binary index registry. Re-adding an already-tracked file replaces its index entry. Symlinks are stored as links (their target is the blob), and the executable bit is kept: files are recorded as `100644` or `100755`, like git. A path that doesn't exist is an error.
 
 ### `rm` — Remove files
 
@@ -80,7 +80,7 @@ fit rm <path> [path ...]
 
 ```
 
-Removes files from the index and deletes them from the working tree. Raises an error if a path is not tracked or outside the worktree.
+Removes files from the index and deletes them from the working tree. Raises an error, before changing anything, if a path is not tracked or outside the worktree.
 
 ### `commit` — Record a snapshot
 
@@ -89,7 +89,7 @@ fit commit -m "message"
 
 ```
 
-Builds a tree from the current index, wraps it in a commit object (with author/committer identities are read from fit config (`$XDG_CONFIG_HOME/fit/config`, `~/.config/fit/config`, or `~/.fitconfig`), with `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` as automatic fallbacks if no fit identity is found), and advances the active branch ref. Detached HEAD writes directly to `HEAD`.
+Builds a tree from the current index, wraps it in a commit object, and advances the active branch ref; a detached HEAD writes directly to `HEAD`. Author and committer are `Name <email>` plus the current timestamp and timezone. The identity is read from fit config (`$XDG_CONFIG_HOME/fit/config`, `~/.config/fit/config`, or `~/.fitconfig`), with `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` as automatic fallbacks if no fit identity is found. Refuses with "Nothing to commit" when the tree is identical to the parent's (or the index is empty on the first commit). Refs, `HEAD`, the index and objects are written to a temporary file and renamed into place, so a crash never leaves a half-written file.
 
 ### `status` — Show working tree state
 
@@ -102,7 +102,7 @@ Prints three distinct sections:
 
 * **Branch** — Current branch name or detached HEAD hash.
 * **Changes to be committed** — Diff between HEAD tree and the index (added, modified, deleted).
-* **Changes not staged / Untracked** — Diff between the index and working tree, with `.fitignore` filtering rules applied.
+* **Changes not staged / Untracked** — Diff between the index and working tree, with `.fitignore` filtering rules applied. A file whose size and modification time (to the nanosecond) match its index entry is taken as unchanged without being read; otherwise its content is re-hashed, so touching a file without editing it doesn't report it as modified.
 
 ### `log` — Display commit history
 
@@ -111,14 +111,14 @@ fit log [commit]
 
 ```
 
-Walks the parent chain backward starting from the given commit (defaults to `HEAD`).
+Walks the first-parent chain backward starting from the given commit (defaults to `HEAD`).
 
 ### `tag` — List or create tags
 
 ```bash
 fit tag                        # List all tags
 fit tag <name> [object]        # Lightweight tag pointing to object (default HEAD)
-fit tag -a <name> [object]     # Annotated tag (creates a distinct tag object)
+fit tag -a -m <msg> <name> [object]  # Annotated tag (a tag object with a tagger and message)
 
 ```
 
@@ -128,7 +128,7 @@ fit tag -a <name> [object]     # Annotated tag (creates a distinct tag object)
 fit diff
 ```
 
-Hashes each tracked file in the working tree and compares it against the blob stored in the index. Files that match are skipped; changed files are printed in unified diff format (`-`/`+` lines). Only reflects working tree vs index — to see index vs HEAD, use `status`.
+Hashes each tracked file in the working tree (without storing anything) and compares it against the blob stored in the index. Files that match are skipped; changed files are printed line by line with `-`/`+` tags, and a last line without a trailing newline is marked `\ No newline at end of file`. The comparison walks both files with two cursors and doesn't look ahead, so the output is complete but not always minimal. Only reflects working tree vs index — to see index vs HEAD, use `status`.
 
 ### `branch` — List or create branches
 
@@ -166,7 +166,7 @@ fit checkout <commit> <path>
 
 ```
 
-Reads the tree of the given commit and writes it into `<path>`, which must exist and be empty (or not yet exist).
+Reads the tree of the given commit and writes it into `<path>`, which must be empty or not yet exist. Executable bits and symlinks are restored; a submodule entry becomes an empty directory. Neither `HEAD` nor the index is changed.
 
 ### `show-ref` — List all refs
 
@@ -184,7 +184,7 @@ fit rev-parse [--fit-type blob|commit|tag|tree] <name>
 
 ```
 
-Resolves branches, tags, remote refs, short hashes, and `HEAD`. With `--fit-type`, follows tag/commit indirection until the expected type is found.
+Resolves `HEAD`, short or full hashes, tags and branches, in that order. A short hash that matches several objects is an error, unless `--fit-type` singles one out. With `--fit-type`, annotated tags are followed to their object and commits to their tree until the expected type is found; any other type mismatch is an error.
 
 ### `cat-file` — Inspect an object
 
@@ -193,7 +193,7 @@ fit cat-file <type> <object>
 
 ```
 
-Deserializes and prints the raw content of any object. `type` must match the object's actual type (`blob`, `commit`, `tag`, `tree`).
+Prints the content of an object: blobs, commits and tags as stored, trees in `ls-tree` format. `type` must match the object's actual type (`blob`, `commit`, `tag`, `tree`), or be reachable from it as with `rev-parse --fit-type`.
 
 ### `hash-object` — Hash a file into the object store
 
@@ -202,7 +202,7 @@ fit hash-object [-t type] [-w] <file>
 
 ```
 
-Computes the SHA-1 of the file content wrapped in a Git object header. `-w` writes it to `.fit/objects/`. Defaults to type `blob`.
+Computes the SHA-1 of the file content wrapped in a Git object header. Only `-w` writes it to `.fit/objects/`. Defaults to type `blob`.
 
 ### `ls-tree` — Print a tree object
 
@@ -239,4 +239,6 @@ fit push <url> -u <username> -p <token>
 
 ```
 
-Pushes the local master/main branch to a remote Git server over HTTPS. Credentials are prompted interactively if `-u` and `-p` are not provided. For GitHub, use a **Personal Access Token** as the password.
+Pushes the current branch (the one `HEAD` points at) to the branch of the same name on a remote Git server over HTTPS, sending only the objects the remote doesn't already have, in one undeltified packfile. Credentials are prompted interactively if `-u` and `-p` are not provided. For GitHub, use a **Personal Access Token** as the password.
+
+Fit can't fetch, so a push is refused when the remote branch has commits that aren't present locally. HTTP errors, and a rejection in the server's status report (for example a non-fast-forward), are reported as errors.
